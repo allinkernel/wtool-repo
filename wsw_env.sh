@@ -1,5 +1,15 @@
-rs_cur () {
-    repo sync --force-sync -d -c $(repo manifest | rg --pcre2 "(?<=path=\")${$(pwd)#$(css)/}[^\"]+(?=\")" | rg --pcre2 -o "(?<=name=\")[^\"]+?(?=\")" ) -j123 2>&1 |tee $(pwd)/rs_cur.log
+rscur () {
+    (
+        cur_dir=${${PWD}#$(css)/}
+        echo '==>' cur_dir is ${cur_dir}
+        if [[ -e ${PWD}/.git ]]; then
+            echo '==>' repo sync -c ${cur_dir}
+            #repo sync -c ${cur_dir}
+            return $?
+        fi
+        echo '==>' repo sync --force-sync -d -c $(repo manifest | rg --pcre2 "(?<=path=\")${cur_dir}[^\"]+(?=\")" | rg --pcre2 -o "(?<=name=\")[^\"]+?(?=\")" ) -j$(nproc)
+        #repo sync --force-sync -d -c $(repo manifest | rg --pcre2 "(?<=path=\")[^\"]+(?=\")" | rg --pcre2 -o "(?<=name=\")[^\"]+?(?=\")" ) -j$(nproc)
+    ) 2>&1 | tee rs.log
 }
 
 rs () {
