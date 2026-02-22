@@ -1,3 +1,7 @@
+rs_cur () {
+    repo sync --force-sync -d -c $(repo manifest | rg --pcre2 "(?<=path=\")${$(pwd)#$(css)/}[^\"]+(?=\")" | rg --pcre2 -o "(?<=name=\")[^\"]+?(?=\")" ) -j123 2>&1 |tee $(pwd)/rs_cur.log
+}
+
 rs () {
     tmp_xml=$(mktemp).xml
     repo manifest -o ${tmp_xml}
