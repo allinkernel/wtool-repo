@@ -63,6 +63,12 @@ cnp ()
         return 1
     }
     dir=${${ctt_dir}##${css_dir}/}
+    {
+        ${WSW_ANDROID_DIR}/my_repo.py name_from_path ${dir} --root ${css_dir} &>/dev/null;
+    } || {
+        echo "${funcstack[1]}: ${WSW_ANDROID_DIR}/my_repo.py: no project with path:'${dir}' in your manifests!!!" >&2
+        return 1
+    }
     echo ${dir}
     return 0
 }
@@ -79,7 +85,7 @@ cnn() {
     {
         ${WSW_ANDROID_DIR}/my_repo.py name_from_path ${cnp_dir} --root ${css_dir}
     } || {
-        echo "${funcstack[1]}: ${WSW_ANDROID_DIR}/my_repo.py: no project with path:'${repo_path}' in your manifests!!!" >&2
+        echo "${funcstack[1]}: ${WSW_ANDROID_DIR}/my_repo.py: no project with path:'${cnp_dir}' in your manifests!!!" >&2
         return 1
     }
     return 0
@@ -316,6 +322,7 @@ gbb ()
 {
     local ctt_dir cmd need_to_review=1
     if ! ctt_dir=$(ctt); then
+        echo "${funcstack[1]}: not in project dir!!!" >&2
         return 1
     fi
 
@@ -323,7 +330,7 @@ gbb ()
         zsh ${ctt_dir}/gbb
         return 0
     fi
-    cmd=$(gb) || echo "${funcstack[1]}: not in project dir!!!" >&2 && return 1
+    cmd=$(gb) || { echo "${funcstack[1]}: not in project dir!!!" >&2; return 1; }
     if [[ ${need_to_review} -eq 0 ]]; then
         cmd=$(grep -P 'git push .*?HEAD:(refs/for/)' <(echo ${cmd}))
     else
@@ -336,21 +343,30 @@ gbb ()
 
 rscur () {
 # repo sync all repo project in current rel-path
-    [[ -z "$(css)" ]] && return 0
-
-    local _cur_dir="" _answer="" _cmd=""
-    _cur_dir=${${PWD}#$(css)/}
-    if [[ -n "$(cnn)" ]]; then
-        _cmd="repo sync -c ${cur_dir}"
+    local count cur_dir all_sub_dir cnn_dir _answer _cmd
+    css_dir=$(css 2>/dev/null) || { echo "${funcstack[1]}: not in repo dir!!!" >&2; return 1; }
+    if cnn_dir=$(cnn 2>/dev/null) ; then
+        _cmd="repo sync -c ${cnn_dir}"
     else
-        _cmd="repo sync --force-sync -d -c $(repo manifest | rg --pcre2 '(?<=path=\")${cur_dir}[^\"]+(?=\")' | rg --pcre2 -o '(?<=name=\")[^\"]+?(?=\")" ') -j$(nproc)"
+        cur_dir="${${PWD}##${css_dir}/}"
+        echo ${cur_dir}
+        all_sub_dir=(${(f)"$(repo list | sort | rg -o --pcre2 "^${cur_dir}/(?<=${cur_dir}/)[^ ]+")"})
+        echo ${all_sub_dir}
+        all_sub_dir=(${all_sub_dir//${cur_dir}\//})
+        count=${#all_sub_dir}
+        all_sub_dir=${(j: :)${all_sub_dir}}
+        if [[ ${all_sub_dir} == "" ]]; then
+            echo "${funcstack[1]}: TODO: repo list has no such dir before download it!!!" >&2
+            return 1
+        fi
+        _cmd="repo sync --force-sync -d -c ${all_sub_dir} -j$(nproc)"
     fi
     echo '==>'"${_cmd}"
-    printf "execute it? ({ENTER/Y/y}/{N/n/*}) "
+    printf "total ${count} repos in ${cur_dir}, execute it? ({ENTER/Y/y}/{N/n/*}) "
     read answer
     [[ -z "${answer}" ]] || [[ "${answer}" =~ ^(Y|y)?$ ]] && eval "${_cmd}"
 
-    unset _cur_dir _answer _cmd
+    unset cur_dir _answer _cmd
 }
 
 rs () {
