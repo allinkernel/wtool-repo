@@ -341,6 +341,42 @@ gbb ()
     return $?
 }
 
+
+rs () {
+    tmp_xml=$(mktemp).xml
+    repo manifest -o ${tmp_xml}
+    # TODO:后续要把 repo manifest -Ro 实现，创造自己的repo仓
+    repo sync -c -j$(grep 'processor' /proc/cpuinfo | wc -l) --force-sync --force-checkout -d -m ${tmp_xml}
+}
+
+wninja() {
+    # this only for zsh
+    if [[ -z $ZSH_VERSION ]]; then
+        return
+    fi
+    # 局部作用域定义变量，防止污染全局
+    local ninja_bin prebuilt_ninja
+    prebuilt_ninja="$(css)/prebuilts/build-tools/linux-x86/bin/ninja"
+    if [[ -f "$prebuilt_ninja" ]]; then
+        ninja_bin="$prebuilt_ninja"
+    else
+        ninja_bin="ninja" # 回退到系统路径
+    fi
+    combined_configs=(out/combined-*.ninja(N))
+    build_configs=(out/build.ninja(N))
+    nested_configs=(out/*/*/build.ninja(N))
+
+    if (( $#combined_configs > 0 )); then
+        "$ninja_bin" -f "$combined_configs[1]" "$@"
+    elif (( $#build_configs > 0 )); then
+        "$ninja_bin" -f "$build_configs[1]" "$@"
+    elif (( $#nested_configs > 0 )); then
+        "$ninja_bin" -f "$nested_configs[1]" "$@"
+    else
+        echo "Error: No ninja build file found."
+        return 1
+    fi
+}
 rscur () {
 # repo sync all repo project in current rel-path
     local count cur_dir all_sub_dir cnn_dir _answer _cmd
@@ -368,11 +404,3 @@ rscur () {
 
     unset cur_dir _answer _cmd
 }
-
-rs () {
-    tmp_xml=$(mktemp).xml
-    repo manifest -o ${tmp_xml}
-    # TODO:后续要把 repo manifest -Ro 实现，创造自己的repo仓
-    repo sync -c -j$(grep 'processor' /proc/cpuinfo | wc -l) --force-sync --force-checkout -d -m ${tmp_xml}
-}
-
