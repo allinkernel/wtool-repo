@@ -354,6 +354,7 @@ wninja() {
     if [[ -z $ZSH_VERSION ]]; then
         return
     fi
+    cs
     # 局部作用域定义变量，防止污染全局
     local ninja_bin prebuilt_ninja
     prebuilt_ninja="$(css)/prebuilts/build-tools/linux-x86/bin/ninja"
