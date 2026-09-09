@@ -1,4 +1,24 @@
-export WSW_ANDROID_DIR=$(get_this_dir)
+# 迁移自 mytool/android/wsw_env.sh（原 wsw-androidrc）。纯 zsh，由 ~/.zshrc 里的 wtool 块 source。
+#
+# WTOOL_PROJECT_DIR 由 wtool 块导出 = $HOME/.wtool/links/tools/repo，指向本项目根。
+# 单独 source（不经 wtool 块）时给出默认值，保证可用。
+[[ -n "$WTOOL_PROJECT_DIR" ]] || WTOOL_PROJECT_DIR="$HOME/.wtool/links/tools/repo"
+export WTOOL_REPO_TOOL="$WTOOL_PROJECT_DIR/my_repo.py"
+
+# _up_to_have_dir 原本定义在 mytool/zsh/wsw-zshrc/wsw.zsh 里；
+# 本项目迁移为独立项目后需要自包含，故内联一份（仅 zsh，用了 ${cur_dir:h}）。
+_up_to_have_dir ()
+{
+    target_dir=$1
+    cur_dir=${PWD}
+    while [[ ! -e ${cur_dir}/${target_dir} ]]; do
+        cur_dir=${cur_dir:h}
+        [[ ${cur_dir} == / ]] && return 1
+    done
+    echo ${cur_dir}
+    return 0
+}
+
 
 cs ()
 {
@@ -64,9 +84,9 @@ cnp ()
     }
     dir=${${ctt_dir}##${css_dir}/}
     {
-        ${WSW_ANDROID_DIR}/my_repo.py name_from_path ${dir} --root ${css_dir} &>/dev/null;
+        $WTOOL_REPO_TOOL name_from_path ${dir} --root ${css_dir} &>/dev/null;
     } || {
-        echo "${funcstack[1]}: ${WSW_ANDROID_DIR}/my_repo.py: no project with path:'${dir}' in your manifests!!!" >&2
+        echo "${funcstack[1]}: $WTOOL_REPO_TOOL: no project with path:'${dir}' in your manifests!!!" >&2
         return 1
     }
     echo ${dir}
@@ -83,9 +103,9 @@ cnn() {
         return 1
     }
     {
-        ${WSW_ANDROID_DIR}/my_repo.py name_from_path ${cnp_dir} --root ${css_dir}
+        $WTOOL_REPO_TOOL name_from_path ${cnp_dir} --root ${css_dir}
     } || {
-        echo "${funcstack[1]}: ${WSW_ANDROID_DIR}/my_repo.py: no project with path:'${cnp_dir}' in your manifests!!!" >&2
+        echo "${funcstack[1]}: $WTOOL_REPO_TOOL: no project with path:'${cnp_dir}' in your manifests!!!" >&2
         return 1
     }
     return 0
@@ -102,9 +122,9 @@ repo_mfst_get_name_from_path() {
         return 1
     }
     {
-        ${WSW_ANDROID_DIR}/my_repo.py name_from_path ${repo_path} --root ${css_dir}
+        $WTOOL_REPO_TOOL name_from_path ${repo_path} --root ${css_dir}
     } || {
-        echo "${funcstack[1]}: ${WSW_ANDROID_DIR}/my_repo.py: no project with path:'${repo_path}' in your manifests!!!" >&2
+        echo "${funcstack[1]}: $WTOOL_REPO_TOOL: no project with path:'${repo_path}' in your manifests!!!" >&2
         return 1
     }
     return 0
@@ -122,9 +142,9 @@ repo_mfst_get_path_from_name() {
         return 1
     }
     {
-        ${WSW_ANDROID_DIR}/my_repo.py path_from_name ${repo_name} --root ${css_dir}
+        $WTOOL_REPO_TOOL path_from_name ${repo_name} --root ${css_dir}
     } || {
-        echo "${funcstack[1]}: ${WSW_ANDROID_DIR}/my_repo.py: no project with name:'${repo_name}' in your manifests!!!" >&2
+        echo "${funcstack[1]}: $WTOOL_REPO_TOOL: no project with name:'${repo_name}' in your manifests!!!" >&2
         return 1
     }
     return 0
@@ -141,9 +161,9 @@ repo_mfst_get_branch_from_path() {
         return 1
     }
     {
-        ${WSW_ANDROID_DIR}/my_repo.py branch_from_path ${repo_path} --root ${css_dir}
+        $WTOOL_REPO_TOOL branch_from_path ${repo_path} --root ${css_dir}
     } || {
-        echo "${funcstack[1]}: ${WSW_ANDROID_DIR}/my_repo.py: no project with path:'${repo_path}' in your manifests!!!" >&2
+        echo "${funcstack[1]}: $WTOOL_REPO_TOOL: no project with path:'${repo_path}' in your manifests!!!" >&2
         return 1
     }
     return 0
@@ -160,9 +180,9 @@ repo_mfst_get_branch_from_name() {
         return 1
     }
     {
-        ${WSW_ANDROID_DIR}/my_repo.py branch_from_name ${repo_name} --root ${css_dir}
+        $WTOOL_REPO_TOOL branch_from_name ${repo_name} --root ${css_dir}
     } || {
-        echo "${funcstack[1]}: ${WSW_ANDROID_DIR}/my_repo.py: no project with name:'${repo_name}' in your manifests!!!" >&2
+        echo "${funcstack[1]}: $WTOOL_REPO_TOOL: no project with name:'${repo_name}' in your manifests!!!" >&2
         return 1
     }
     return 0
@@ -179,9 +199,9 @@ repo_mfst_get_remote_from_name() {
         return 1
     }
     {
-        ${WSW_ANDROID_DIR}/my_repo.py remote_from_name ${repo_name} --root ${css_dir}
+        $WTOOL_REPO_TOOL remote_from_name ${repo_name} --root ${css_dir}
     } || {
-        echo "${funcstack[1]}: ${WSW_ANDROID_DIR}/my_repo.py: no project with name:'${repo_name}' in your manifests!!!" >&2
+        echo "${funcstack[1]}: $WTOOL_REPO_TOOL: no project with name:'${repo_name}' in your manifests!!!" >&2
         return 1
     }
     return 0
@@ -198,9 +218,9 @@ repo_mfst_get_remote_from_path() {
         return 1
     }
     {
-        ${WSW_ANDROID_DIR}/my_repo.py remote_from_path ${repo_path} --root ${css_dir}
+        $WTOOL_REPO_TOOL remote_from_path ${repo_path} --root ${css_dir}
     } || {
-        echo "${funcstack[1]}: ${WSW_ANDROID_DIR}/my_repo.py: no project with path:'${repo_path}' in your manifests!!!" >&2
+        echo "${funcstack[1]}: $WTOOL_REPO_TOOL: no project with path:'${repo_path}' in your manifests!!!" >&2
         return 1
     }
     return 0

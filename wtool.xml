@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  迁移自 mytool/android（原 wsw-androidrc）—— 一套 repo/git 辅助命令
+  （cs / css / ct / ctt / cnp / cnn / cm / cmm / cdd / gb / gbb / rs / rscur / wninja
+   + repo_mfst_* 查询族），并依赖本目录下的 my_repo.py（读取 repo manifest）。
+
+  没有 <link>：所有命令都通过 $WTOOL_PROJECT_DIR（= $HOME/.wtool/links/tools/repo）
+  找到 my_repo.py，所以只需要往 ~/.zshrc 注入 env.zsh 即可。
+  纯 zsh（用了 ${cur_dir:h}、${funcstack[1]} 等），shells="zsh"。
+
+  注意：id=tools/repo 是契约，出现在 ~/.wtool/links/tools/repo 与 ~/.zshrc 的块里。
+-->
+<wtool schema="1" id="tools/repo" priority="40">
+
+  <env src="env.zsh" shells="zsh"/>
+
+</wtool>
