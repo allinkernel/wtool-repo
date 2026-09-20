@@ -1,12 +1,15 @@
 # tools/repo
 
 从 `~/source/mytool/android`（原 `wsw-androidrc`）迁移过来的一套 **repo/git 辅助命令**。
-本项目是**纯 env 项目**：没有 `<link>`，所有内容靠往 `~/.zshrc` 注入 `env.zsh` 提供。
+本项目是**纯 env 项目**：没有 `<link>`，所有内容靠往 rc 文件注入 env 脚本提供。
+**zsh 和 bash 各一份**（`env.zsh` / `env.bash`，内容等价）：受众里有人机器上
+没有 zsh，而 bash 基本人人都有。
 
 ## 安装
 
 ```sh
-wtool install tools/repo     # 建中转链接 ~/.wtool/links/tools/repo + 往 ~/.zshrc 写 wtool 块
+wtool install tools/repo     # 建中转链接 ~/.wtool/links/tools/repo
+                             # + 往 ~/.zshrc / ~/.bashrc 各写一个 wtool 块
 ```
 
 ## 提供哪些命令
@@ -68,7 +71,9 @@ ggcp https://gerrit.company.com/c/proj/+/1234/2
   发布包解出来的工作区也没有 `.repo/repo`，python 版 repo 各版本的构造函数还不一样
   （新版要求 `manifest_file` 必须是绝对路径）。
   现在支持 `<include>` / `<remove-project>` / `<extend-project>` / `.repo/local_manifests/*.xml`。
-- **zsh**：用了 `${cur_dir:h}`、`${funcstack[1]}`、`(N)` 全局等 zsh 语法，只对 zsh 生效。
+- **zsh 或 bash**：两个 shell 各有一份 env（`env.zsh` / `env.bash`），命令、报错、退出码
+  完全一致。自己 source 时按当前 shell 选一份即可；两份必须同改，
+  `tests/run_tests.sh` 会用同一张用例表把两个 shell 都跑一遍。
 - **ssh**：`ggcp`/`gchk`/`gq` 走 `ssh <gerrit> gerrit query`，需要你的公钥在 gerrit 上登记过。
 - **`rg` / `nproc` / `base64` 等**：`rscur` 用 `rg`，`rs` 用 `nproc`。
 - 这些命令针对 repo 多仓/AOSP 场景，在非 repo 目录会报 `not in repo dir`。
@@ -96,7 +101,7 @@ sh tests/run_tests.sh
 |---|---|---|
 | `export WSW_ANDROID_DIR=$(get_this_dir)` | `$WTOOL_PROJECT_DIR` | 加载器已经导出稳定地址，不再需要 `get_this_dir` |
 | `$WSW_ANDROID_DIR/my_repo.py` | `$WTOOL_REPO_TOOL`（= `$WTOOL_PROJECT_DIR/my_repo.py`） | 统一命名，且独立于安装位置 |
-| `_up_to_have_dir` 依赖外部 source 链 | 内联在 `env.zsh` | 本项目停用 `source_all_env.sh` 后要自包含 |
+| `_up_to_have_dir` 依赖外部 source 链 | 内联在 env 文件里 | 本项目停用 `source_all_env.sh` 后要自包含 |
 | `my_repo.py` import repo 内部 `manifest_xml` | 自己解析 XML | 见上面"依赖"一节 |
 | 无 | `ggcp` / `gchk` / `gq` / `gpush` | gerrit 检视流程 |
 
@@ -105,7 +110,7 @@ sh tests/run_tests.sh
 | 文件 | 作用 |
 |---|---|
 | `wtool.xml` | 清单：1 个 env（无 link） |
-| `env.zsh` | 全部命令 + `_up_to_have_dir` + `$WTOOL_REPO_TOOL` |
+| `env.zsh` / `env.bash` | 全部命令 + `_up_to_have_dir` + `$WTOOL_REPO_TOOL`（zsh / bash 两份，等价） |
 | `my_repo.py` | manifest 查询工具（自包含解析） |
 | `gerrit_query.py` | 解析 `gerrit query --format=JSON` 的输出（供 ggcp/gchk/gq 用） |
-| `tests/run_tests.sh` | 上面两个 python 工具的测试 |
+| `tests/run_tests.sh` | 上面两个 python 工具的测试 + env.zsh/env.bash 的行为对比 |

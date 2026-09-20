@@ -233,80 +233,84 @@ fi
 # 这一节钉的就是"在公司敲了 cnp <路径> 没反应"那类事：
 # 命令必须明确告诉你"参数用错了/该用哪条命令"，而不是静默忽略或含糊其辞。
 # ---------------------------------------------------------------------------
-if command -v zsh >/dev/null 2>&1; then
-    echo "== env.zsh：cnp/cdd 的用法报错（zsh）=="
+# 同一个用例表跑两个 shell：env.zsh 和 env.bash 必须行为一致
+# （命令名、退出码、报错文字都一样；只有实现语法不同）
+for SHELL_NAME in zsh bash; do
+    if ! command -v "$SHELL_NAME" >/dev/null 2>&1; then
+        echo "== env.$SHELL_NAME：跳过（没装 $SHELL_NAME）=="
+        continue
+    fi
+    echo "== env.$SHELL_NAME：cnp/cdd 的用法报错 =="
     mkdir -p "$WS/kernel/common/.git" "$WS/device/emui/generic_a15/.git"
 
-    zsh_eval () {   # $1 = 在夹具根目录下执行的 zsh 片段
-        cat > "$T/z.zsh" <<EOF
+    shell_eval () {   # $1 = 在夹具里执行的片段
+        cat > "$T/s.script" <<EOF
 WTOOL_PROJECT_DIR='$here/..'
-source "\$WTOOL_PROJECT_DIR/env.zsh"
+source "\$WTOOL_PROJECT_DIR/env.$SHELL_NAME"
 cd '$WS/kernel/common'
 $1
 EOF
-        zsh "$T/z.zsh" 2>&1
+        "$SHELL_NAME" "$T/s.script" 2>&1
     }
     # set -e 下，"预期会失败"的命令必须用 `|| rc=$?` 接住，
     # 直接 `out=$(...)` 会让整个测试脚本在第一个失败用例上停住
-    zrun () {       # $1 = 片段；设置 out / rc
+    srun () {       # $1 = 片段；设置 out / rc
         rc=0
-        out=$(zsh_eval "$1") || rc=$?
+        out=$(shell_eval "$1") || rc=$?
     }
 
-    zrun 'cnp device/emui/generic_a15'
+    srun 'cnp device/emui/generic_a15'
     chk "cnp 给参数：退出码 2（不再静默忽略）" "$rc" "2"
     case $out in
         *cdd*) ok "cnp 的报错里点名了 cdd" ;;
         *) bad "cnp 的报错没提 cdd：[$out]" ;;
     esac
 
-    zrun 'cnp'
+    srun 'cnp'
     chk "cnp 不带参数：报出当前项目路径" "$out" "kernel/common"
-    zrun 'cnn'
+    srun 'cnn'
     chk "cnn 不带参数：报出清单名字" "$out" "kernel/common"
 
-    zrun 'cdd'
+    srun 'cdd'
     chk "cdd 不给参数：退出码 2" "$rc" "2"
 
-    zrun 'cdd local/only'
+    srun 'cdd local/only'
     chk "cdd 到清单里有、目录没有的项目：退出码 1" "$rc" "1"
     case $out in
         *"repo sync"*) ok "cdd 提示先 repo sync" ;;
         *) bad "cdd 没提示 repo sync：[$out]" ;;
     esac
 
-    zrun 'cdd nope/nope'
+    srun 'cdd nope/nope'
     chk "cdd 到不存在的名字：退出码 1" "$rc" "1"
     case $out in
         *"清单里没有"*) ok "cdd 报错说清了" ;;
         *) bad "cdd 报错不清楚：[$out]" ;;
     esac
 
-    zrun 'cdd device/emui/generic_a15 >/dev/null 2>&1 && pwd'
+    srun 'cdd device/emui/generic_a15 >/dev/null 2>&1 && pwd'
     chk "cdd 到项目名能跳过去" "$out" "$WS/device/emui/generic_a15"
-    zrun 'cdd external/zlib >/dev/null 2>&1; cdd kernel/common >/dev/null 2>&1 && pwd'
+    srun 'cdd external/zlib >/dev/null 2>&1; cdd kernel/common >/dev/null 2>&1 && pwd'
     chk "cdd 到相对 repo 根的路径也能跳" "$out" "$WS/kernel/common"
 
-    echo "== env.zsh：ggcp 的参数解析（不连网，只测拆参数）=="
-    zrun '_gerrit_parse_change_arg 1234 && print -r -- "$_GERRIT_CHANGE"'
+    echo "== env.$SHELL_NAME：ggcp 的参数解析（不连网，只测拆参数）=="
+    srun '_gerrit_parse_change_arg 1234 && printf "%s\n" "$_GERRIT_CHANGE"'
     chk "1234 -> change" "$out" "1234"
-    zrun '_gerrit_parse_change_arg 1234/2 && print -r -- "$_GERRIT_CHANGE $_GERRIT_PS"'
+    srun '_gerrit_parse_change_arg 1234/2 && printf "%s %s\n" "$_GERRIT_CHANGE" "$_GERRIT_PS"'
     chk "1234/2 -> change+patchset" "$out" "1234 2"
-    zrun '_gerrit_parse_change_arg 1234,2 && print -r -- "$_GERRIT_CHANGE $_GERRIT_PS"'
+    srun '_gerrit_parse_change_arg 1234,2 && printf "%s %s\n" "$_GERRIT_CHANGE" "$_GERRIT_PS"'
     chk "1234,2 -> change+patchset" "$out" "1234 2"
-    zrun '_gerrit_parse_change_arg https://g.example.com/c/p/+/1234/3 9 && print -r -- "$_GERRIT_CHANGE $_GERRIT_PS"'
+    srun '_gerrit_parse_change_arg https://g.example.com/c/p/+/1234/3 9 && printf "%s %s\n" "$_GERRIT_CHANGE" "$_GERRIT_PS"'
     chk "显式 patchset 覆盖 URL 里的" "$out" "1234 9"
-    zrun "_gerrit_parse_change_arg 'https://g.example.com/#/c/1234/2' && print -r -- \"\$_GERRIT_CHANGE \$_GERRIT_PS\""
+    srun "_gerrit_parse_change_arg 'https://g.example.com/#/c/1234/2' && printf \"%s %s\\n\" \"\$_GERRIT_CHANGE\" \"\$_GERRIT_PS\""
     chk "老式 #/c/ 链接" "$out" "1234 2"
-    zrun '_gerrit_parse_change_arg abc'
+    srun '_gerrit_parse_change_arg abc'
     chk "看不出编号：退出码 2" "$rc" "2"
     case $out in
         *patchset*) ok "报错里给了用法" ;;
         *) bad "报错里没给用法：[$out]" ;;
     esac
-else
-    echo "== env.zsh：跳过（没装 zsh）=="
-fi
+done
 
 printf '\n%d 通过, %d 失败\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
