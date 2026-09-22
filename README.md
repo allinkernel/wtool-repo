@@ -8,7 +8,7 @@
 ## 安装
 
 ```sh
-wtool install tools/repo     # 建中转链接 ~/.wtool/links/tools/repo
+wtool install tools/repo     # 建中转链接 ~/.wtool/wtool-work-dir/links/tools/repo
                              # + 往 ~/.zshrc / ~/.bashrc 各写一个 wtool 块
 ```
 
@@ -92,8 +92,8 @@ sh tests/run_tests.sh
 ## 用的还是"稳定地址"
 
 和 `terminal/tmux` 一样的约定：命令里不写仓库真实路径，而写 `$WTOOL_PROJECT_DIR`
-（= `~/.wtool/links/tools/repo`，引擎 install 时自动创建、指向本项目根）。
-把 wtool 下载到任何目录，`~/.wtool/links/tools/repo` 都指向它，命令**在所有机器上行为一致**。
+（= `~/.wtool/wtool-work-dir/links/tools/repo`，引擎 install 时自动创建、指向本项目根）。
+把 wtool 下载到任何目录，`~/.wtool/wtool-work-dir/links/tools/repo` 都指向它，命令**在所有机器上行为一致**。
 
 ## 与 mytool 版本的差异
 

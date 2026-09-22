@@ -12,8 +12,8 @@
 #   ${(f)"$(cmd)"} -> while read < <(cmd)      ${(j: :)arr} -> "${arr[*]}"
 # 目标：bash 4+（Ubuntu 20.04 起都是 5.x），没用 bash 5 独有语法。
 
-# WTOOL_PROJECT_DIR 由 wtool 块导出 = $HOME/.wtool/links/tools/repo
-[ -n "$WTOOL_PROJECT_DIR" ] || WTOOL_PROJECT_DIR="$HOME/.wtool/links/tools/repo"
+# WTOOL_PROJECT_DIR 由 wtool 块导出 = $HOME/.wtool/wtool-work-dir/links/tools/repo
+[ -n "$WTOOL_PROJECT_DIR" ] || WTOOL_PROJECT_DIR="$HOME/.wtool/wtool-work-dir/links/tools/repo"
 export WTOOL_REPO_TOOL="$WTOOL_PROJECT_DIR/my_repo.py"
 # 解析 gerrit query JSON 的小工具（ggcp / gchk / gq 用）
 export WTOOL_GERRIT_TOOL="$WTOOL_PROJECT_DIR/gerrit_query.py"

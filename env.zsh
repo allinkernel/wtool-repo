@@ -1,8 +1,8 @@
 # 迁移自 mytool/android/wsw_env.sh（原 wsw-androidrc）。纯 zsh，由 ~/.zshrc 里的 wtool 块 source。
 #
-# WTOOL_PROJECT_DIR 由 wtool 块导出 = $HOME/.wtool/links/tools/repo，指向本项目根。
+# WTOOL_PROJECT_DIR 由 wtool 块导出 = $HOME/.wtool/wtool-work-dir/links/tools/repo，指向本项目根。
 # 单独 source（不经 wtool 块）时给出默认值，保证可用。
-[[ -n "$WTOOL_PROJECT_DIR" ]] || WTOOL_PROJECT_DIR="$HOME/.wtool/links/tools/repo"
+[[ -n "$WTOOL_PROJECT_DIR" ]] || WTOOL_PROJECT_DIR="$HOME/.wtool/wtool-work-dir/links/tools/repo"
 export WTOOL_REPO_TOOL="$WTOOL_PROJECT_DIR/my_repo.py"
 # 解析 gerrit query JSON 的小工具（ggcp / gchk / gq 用）
 export WTOOL_GERRIT_TOOL="$WTOOL_PROJECT_DIR/gerrit_query.py"
