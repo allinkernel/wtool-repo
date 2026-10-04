@@ -1,4 +1,4 @@
-# tools/repo —— repo/git 辅助命令（**bash 版**），由 ~/.bashrc 里的 wtool 块 source。
+# tools/git-repo-sh-tools —— repo/git 辅助命令（**bash 版**），由 ~/.bashrc 里的 wtool 块 source。
 #
 # 和 env.zsh **等价**：同一批命令、同一套报错、同样的 gerrit 客户端行为。
 # 为什么有两份：受众里有人机器上没装 zsh（公司机器很常见），而 bash 基本人人都有。
@@ -12,8 +12,8 @@
 #   ${(f)"$(cmd)"} -> while read < <(cmd)      ${(j: :)arr} -> "${arr[*]}"
 # 目标：bash 4+（Ubuntu 20.04 起都是 5.x），没用 bash 5 独有语法。
 
-# WTOOL_PROJECT_DIR 由 wtool 块导出 = $HOME/.wtool/wtool-work-dir/links/tools/repo
-[ -n "$WTOOL_PROJECT_DIR" ] || WTOOL_PROJECT_DIR="$HOME/.wtool/wtool-work-dir/links/tools/repo"
+# WTOOL_PROJECT_DIR 由 wtool 块导出 = $HOME/.wtool/wtool-work-dir/links/tools/git-repo-sh-tools
+[ -n "$WTOOL_PROJECT_DIR" ] || WTOOL_PROJECT_DIR="$HOME/.wtool/wtool-work-dir/links/tools/git-repo-sh-tools"
 export WTOOL_REPO_TOOL="$WTOOL_PROJECT_DIR/my_repo.py"
 # 解析 gerrit query JSON 的小工具（ggcp / gchk / gq 用）
 export WTOOL_GERRIT_TOOL="$WTOOL_PROJECT_DIR/gerrit_query.py"

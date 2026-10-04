@@ -1,4 +1,4 @@
-# tools/repo —— repo / git / gerrit 辅助命令
+# tools/git-repo-sh-tools —— repo / git / gerrit 辅助命令
 
 从 `~/source/mytool/android`（原 `wsw-androidrc`）迁移过来的一套 **repo/git 辅助命令**：
 在多仓（repo 客户端）工作区里定位、查清单、推送、送 gerrit 检视、同步、构建。
@@ -7,8 +7,13 @@
 （命令通过 `$WTOOL_PROJECT_DIR` 找到本目录下的两个 python 工具）。
 **zsh 和 bash 各一份**（`env.zsh` / `env.bash`，内容等价）：受众里有人机器上没有 zsh。
 
-- 项目路径（**身份就是它**，ADR-0037）：`tools/repo`，`priority=40`
+- 项目路径（**身份就是它**，ADR-0037）：`tools/git-repo-sh-tools`，`priority=40`
 - 本仓库没有 `scripts/`（不需要构建/安装脚本）
+
+> **改过名**（2026-10-04）：原来叫 `tools/repo`。项目身份就是路径，所以改名 =
+> 换身份 —— 清单里的 `path=`、中转链接、state 目录、rc 块名都跟着变了，
+> 只 `mv` 目录会留下一整套对不上的孤儿（见 `wtool move`）。
+> **GitHub 仓库名没变**，还是 [allinkernel/wtool-repo](https://github.com/allinkernel/wtool-repo)。
 
 ---
 
@@ -292,13 +297,13 @@ wninja -C out build_image
 ## 安装（由 wtool 统一管）
 
 安装由 wtool 统一管：见 [wtool 的 README（GitHub：allinkernel/wtool）](https://github.com/allinkernel/wtool/blob/main/README.md) —— 本仓库只是源码/配置，
-装的时候是 `wtool install tools/repo`（**项目路径就是它的身份** —— 没有单独的 id，见 ADR-0037）。
+装的时候是 `wtool install tools/git-repo-sh-tools`（**项目路径就是它的身份** —— 没有单独的 id，见 ADR-0037）。
 
 ## 配置项
 
 | 变量 | 谁设的 | 含义 |
 |---|---|---|
-| `WTOOL_PROJECT_DIR` | wtool 块；本文件里给了兜底默认值 | 本项目的中转链接 `~/.wtool/wtool-work-dir/links/tools/repo`；下面两个工具路径都从它拼 |
+| `WTOOL_PROJECT_DIR` | wtool 块；本文件里给了兜底默认值 | 本项目的中转链接 `~/.wtool/wtool-work-dir/links/tools/git-repo-sh-tools`；下面两个工具路径都从它拼 |
 | `WTOOL_REPO_TOOL` | `env.zsh` / `env.bash` 自己 export | `$WTOOL_PROJECT_DIR/my_repo.py`，清单查询工具 |
 | `WTOOL_GERRIT_TOOL` | `env.zsh` / `env.bash` 自己 export | `$WTOOL_PROJECT_DIR/gerrit_query.py`，解析 gerrit query JSON |
 | `WTOOL_GERRIT_HOST` | 你 | gerrit 主机；可写 `user@host:port`（这时 user/port 也从这里拆） |
@@ -374,7 +379,7 @@ sh tests/run_tests.sh      # 77 条
 ## 用的还是"稳定地址"
 
 命令里不写仓库真实路径，而写 `$WTOOL_PROJECT_DIR`
-（= `~/.wtool/wtool-work-dir/links/tools/repo`，引擎 install 时自动创建、指向本项目根）。
+（= `~/.wtool/wtool-work-dir/links/tools/git-repo-sh-tools`，引擎 install 时自动创建、指向本项目根）。
 把 wtool 下载到任何目录，这个链接都指向它，命令**在所有机器上行为一致**。
 
 ## 与 mytool 版本的差异
@@ -397,5 +402,5 @@ sh tests/run_tests.sh      # 77 条
 | `gerrit_query.py` | 解析 `gerrit query --format=JSON` 的输出（供 `ggcp` / `gchk` / `gq` 用） |
 | `tests/run_tests.sh` | 上面两个 python 工具的测试 + `env.zsh`/`env.bash` 的行为对比 |
 
-> 老版本 README 里"安装"一节写的是叫用户自己 `wtool install tools/repo`；
+> 老版本 README 里"安装"一节写的是叫用户自己 `wtool install`；
 > 现在安装口径统一收到 wtool 的 README（本仓库不再讲怎么装）。

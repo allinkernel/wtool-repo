@@ -1,5 +1,5 @@
 #!/bin/sh
-# run_tests.sh —— tools/repo 的测试
+# run_tests.sh —— tools/git-repo-sh-tools（原名 tools/repo）的测试
 #
 # 重点是 my_repo.py：它原来 import repo 的 .repo/repo/manifest_xml.py，
 # 在公司机器上会断（go 版 repo 没有这个模块；发布包里也没有 .repo/repo）。

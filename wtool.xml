@@ -5,15 +5,18 @@
    + repo_mfst_* 查询族 + ggcp / gchk / gq / gpush），
   并依赖本目录下的 my_repo.py（读清单）和 gerrit_query.py（解析 gerrit query）。
 
-  没有 <link>：所有命令都通过 $WTOOL_PROJECT_DIR（= $HOME/.wtool/wtool-work-dir/links/tools/repo）
+  没有 <link>：所有命令都通过 $WTOOL_PROJECT_DIR
+  （= $HOME/.wtool/wtool-work-dir/links/tools/git-repo-sh-tools）
   找到那两个 python 工具，所以只需要往 ~/.zshrc / ~/.bashrc 注入 env 文件即可。
 
   **两个 shell 各一份**：env.zsh 和 env.bash 内容等价（同一批命令、同一套报错）。
   受众里有人机器上没有 zsh，所以 bash 版是必需品。两份必须同改，
   tests/run_tests.sh 会用同一个用例表把两个 shell 都跑一遍。
 
-  注意：**项目身份就是它的路径 `tools/repo`**（ADR-0037 删掉了 id= 属性），
-  它出现在 ~/.wtool/wtool-work-dir/links/tools/repo、state 目录与 rc 文件的块里。
+  注意：**项目身份就是它的路径 `tools/git-repo-sh-tools`**（ADR-0037 删掉了
+  id= 属性；2026-10-04 由 `tools/repo` 改名而来），它出现在
+  ~/.wtool/wtool-work-dir/links/tools/git-repo-sh-tools、state 目录与 rc 文件的块里。
+  **GitHub 仓库名没跟着改**，还是 allinkernel/wtool-repo。
 -->
 <wtool schema="1" priority="40">
 
