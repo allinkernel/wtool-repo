@@ -47,17 +47,28 @@
   两个 python 工具**只用标准库**（python3.6+），也别引入第三方包。
 - **命令通过 `$WTOOL_PROJECT_DIR` 找工具**，不写仓库真实路径；
   `WTOOL_REPO_TOOL` / `WTOOL_GERRIT_TOOL` 由 env 文件自己 export，别人会读它们。
-- 清单解析的优先级是契约（`upstream` > `project revision` > remote `revision` >
-  `<default revision>`；输出剥 `refs/heads/`），测试逐条钉着，别随手改。
+- 清单解析的优先级是契约（代码 `my_repo.py:88`：
+  `upstream` > **`dest-branch`** > `project revision` > remote `revision` > `<default revision>`，
+  且 upstream / dest-branch 各自还有 `<default …>` 兜底；输出剥 `refs/heads/`），
+  别随手改。⚠️ 这句原来漏了 `dest-branch`（2026-10-04 订正，README §4 同步改了）。
 - **项目身份 = 路径 `tools/git-repo-sh-tools`**（ADR-0037 删掉了 `id=` 属性）：中转链接路径、state 目录、rc 块名都用它。
 
 ## 3. 验证（改完必须跑）
 
 ```sh
-sh tests/run_tests.sh      # 77 条，应该全绿
+sh tests/run_tests.sh      # 77 条，应该全绿（以脚本最后打印的通过/失败数为准）
 ```
 
 - 三段：`my_repo.py`、`gerrit_query.py`、`env.zsh`/`env.bash` 对比（同一张用例表跑两个 shell）。
 - **不连网**：gerrit 相关的用例只测"拆参数"，别把真 ssh 塞进测试。
 - 测试全程在临时目录里造假工作区，**不要**在真 `$HOME` / 真工作区上跑。
+- ⚠️ **这份仓库里的命令有"写了就真干"的**：`gbb` **真的 `git push`**、
+  `gpush` 真的推到 `refs/for/`、`rs`/`rscur` 带 `--force-sync -d`（**丢弃本地改动**）、
+  `wninja` 真跑构建。**助手一律不执行它们**（用户级 `~/.dsh/AGENTS.md` 的硬规矩）；
+  要验证就只用 `tests/run_tests.sh`（它造临时工作区、不连网）。
+- **装 / 测只在容器里做**：真机上 `wtool install tools/git-repo-sh-tools`
+  **必须由用户明确同意**。
+- ⚠️ **别把 `wninja` 的两份写"等价"**：`env.zsh` 那份开头有
+  `[[ -z $ZSH_VERSION ]] && return`，在 bash 里 source 时是**静默 no-op**；
+  `env.bash` 那份没有这道门。README §7 已注明。
 - 提交只提交到 `ds_dev`，`git add` 之前先 `git diff` 看一遍；不 push、不动 `main`。

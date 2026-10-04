@@ -128,8 +128,13 @@ action: name_from_path | path_from_name
 - 支持的清单语法：`<remote>` / `<default>` / `<project>` / `<include>` / `<remove-project>` /
   `<extend-project>` / `<linkfile>` / `<copyfile>`，外加 `.repo/local_manifests/*.xml`。
   **未识别的标签/属性忽略而不报错**（新版 repo 加的东西不该把这个工具弄挂）。
-- 分支解析优先级（测试里逐条钉住）：`<project upstream>` > `<project revision>` >
-  remote 级 `revision` > `<default revision>`；输出时剥掉 `refs/heads/` 前缀。
+- 分支解析优先级（`Project.branch`，代码是
+  `self.upstream or self.dest_branch or self.revision_expr`）：
+  `<project upstream>`（没写就退到 `<default upstream>`）> `<project dest-branch>`
+  （没写就退到 `<default dest-branch>`）> `<project revision>` > remote 级 `revision`
+  > `<default revision>`；输出时剥掉 `refs/heads/` 前缀。
+  ⚠️ 这里原来只列了 4 级、**漏掉 `dest-branch`**（2026-10-04 按 `my_repo.py:88` 订正）；
+  测试目前只钉住"upstream 优先于 revision"那一条。
 - 找不到项目/路径：stderr 一行原因，退出码 **1**（不是 traceback）。
 
 ### 5. 推送：`gb` / `gbb`
@@ -292,12 +297,22 @@ wninja -C out build_image
 （两份实现的机制不同：zsh 用 `(N)` glob 限定符、bash 用 `shopt -s nullglob`，
 都是"没匹配就是空"；选择顺序两边一样。**这段是读代码得出的，测试里没有覆盖 `wninja`**。）
 
+> ⚠️ 还有一处两份不一样（2026-10-04 补充）：`env.zsh` 的 `wninja` 开头有
+> `if [[ -z $ZSH_VERSION ]]; then return; fi`（代码注释写着 "this only for zsh"），
+> 所以**把 `env.zsh` 拿到 bash 里 source 的话 `wninja` 什么都不做**（静默 return 0）；
+> `env.bash` 那份没有这道门。正常用法不受影响（zsh 用 `env.zsh`、bash 用 `env.bash`），
+> 但"两份等价"这句话对 `wninja` 只在各自的 shell 里成立。
+
 ---
 
 ## 安装（由 wtool 统一管）
 
 安装由 wtool 统一管：见 [wtool 的 README（GitHub：allinkernel/wtool）](https://github.com/allinkernel/wtool/blob/main/README.md) —— 本仓库只是源码/配置，
 装的时候是 `wtool install tools/git-repo-sh-tools`（**项目路径就是它的身份** —— 没有单独的 id，见 ADR-0037）。
+
+> ⚠️ **wtool 的项目只在容器里装 / 测**（用户级规矩，2026-10-04）：本机（WSL）是临时
+> 的手工环境，wtool 彻底调通之前**不在本地落地**。要在容器里验证就 `--network=host`
+> 挂工作区；**真机上装本项目必须由用户明确同意**，助手不得自行 `wtool install`。
 
 ## 配置项
 
@@ -348,7 +363,7 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 ## 测试
 
 ```sh
-sh tests/run_tests.sh      # 77 条
+sh tests/run_tests.sh      # 77 条（三段合计，以脚本最后打印的通过/失败数为准）
 ```
 
 测试分三段（都在临时目录里造"公司环境"的假工作区，不碰真工作区）：
