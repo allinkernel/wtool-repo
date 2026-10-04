@@ -284,7 +284,8 @@ wninja -C out build_image
    `out/combined-*.ninja` → `out/build.ninja` → `out/*/*/build.ninja`；
 4. 都没有 → `Error: No ninja build file found.`，返回 1。
 
-（zsh 用 `(N)` glob 限定符、bash 用 `shopt -s nullglob` 实现"没匹配就是空"，两个 shell 行为一致。）
+（两份实现的机制不同：zsh 用 `(N)` glob 限定符、bash 用 `shopt -s nullglob`，
+都是"没匹配就是空"；选择顺序两边一样。**这段是读代码得出的，测试里没有覆盖 `wninja`**。）
 
 ---
 
@@ -360,6 +361,9 @@ sh tests/run_tests.sh      # 77 条
 
 - **python3**（3.6+）：`my_repo.py` / `gerrit_query.py` 只用标准库，不装第三方包。
 - **zsh 或 bash**：两个 shell 各一份 env，命令、报错、退出码一致。
+  `tests/run_tests.sh` 用**同一张用例表**把两个 shell 都跑一遍，但它覆盖的是
+  `cnp` / `cnn` / `cdd` 的报错与退出码、以及 `ggcp` 的拆参数；
+  其余命令的"两份等价"靠的是**同改两份文件**，不是测试。
 - **ssh**：`ggcp` / `gchk` / `gq` 走 `ssh <gerrit> gerrit query`，公钥要在 gerrit 上登记过。
 - **GNU grep（要 `-P`）**：`gbb` 挑命令行用。
 - **`rg`（ripgrep，要 `--pcre2`）** 和 **`nproc`**：`rscur` 用；
