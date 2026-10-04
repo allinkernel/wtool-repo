@@ -45,7 +45,7 @@
   `WTOOL_REPO_TOOL` / `WTOOL_GERRIT_TOOL` 由 env 文件自己 export，别人会读它们。
 - 清单解析的优先级是契约（`upstream` > `project revision` > remote `revision` >
   `<default revision>`；输出剥 `refs/heads/`），测试逐条钉着，别随手改。
-- `wtool.xml` 里 id `tools/repo` 是契约（中转链接路径、rc 块名都用它）。
+- **项目身份 = 路径 `tools/repo`**（ADR-0037 删掉了 `id=` 属性）：中转链接路径、state 目录、rc 块名都用它。
 
 ## 3. 验证（改完必须跑）
 

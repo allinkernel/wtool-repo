@@ -7,7 +7,7 @@
 （命令通过 `$WTOOL_PROJECT_DIR` 找到本目录下的两个 python 工具）。
 **zsh 和 bash 各一份**（`env.zsh` / `env.bash`，内容等价）：受众里有人机器上没有 zsh。
 
-- 项目 id：`tools/repo`，`priority=40`
+- 项目路径（**身份就是它**，ADR-0037）：`tools/repo`，`priority=40`
 - 本仓库没有 `scripts/`（不需要构建/安装脚本）
 
 ---
@@ -292,7 +292,7 @@ wninja -C out build_image
 ## 安装（由 wtool 统一管）
 
 安装由 wtool 统一管：见 [wtool 的 README（GitHub：allinkernel/wtool）](https://github.com/allinkernel/wtool/blob/main/README.md) —— 本仓库只是源码/配置，
-装的时候是 `wtool install tools/repo`（项目 id 就是它在清单里的 path）。
+装的时候是 `wtool install tools/repo`（**项目路径就是它的身份** —— 没有单独的 id，见 ADR-0037）。
 
 ## 配置项
 

@@ -12,9 +12,10 @@
   受众里有人机器上没有 zsh，所以 bash 版是必需品。两份必须同改，
   tests/run_tests.sh 会用同一个用例表把两个 shell 都跑一遍。
 
-  注意：id=tools/repo 是契约，出现在 ~/.wtool/wtool-work-dir/links/tools/repo 与 rc 文件的块里。
+  注意：**项目身份就是它的路径 `tools/repo`**（ADR-0037 删掉了 id= 属性），
+  它出现在 ~/.wtool/wtool-work-dir/links/tools/repo、state 目录与 rc 文件的块里。
 -->
-<wtool schema="1" id="tools/repo" priority="40">
+<wtool schema="1" priority="40">
 
   <zshrc  src="env.zsh"/>
   <bashrc src="env.bash"/>
