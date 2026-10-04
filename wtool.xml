@@ -16,7 +16,7 @@
 -->
 <wtool schema="1" id="tools/repo" priority="40">
 
-  <env src="env.zsh"  shells="zsh"/>
-  <env src="env.bash" shells="bash"/>
+  <zshrc  src="env.zsh"/>
+  <bashrc src="env.bash"/>
 
 </wtool>
