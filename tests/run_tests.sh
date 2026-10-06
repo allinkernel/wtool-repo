@@ -229,6 +229,38 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# ggco 的夹具：本地裸仓 + 一个 clone（fetch -> checkout，端到端，不联网）
+# ---------------------------------------------------------------------------
+GGCO_OK=0
+GGCO_BARE="$T/ggco/bare.git"
+GGCO_WORK="$T/ggco/work"
+GGCO_FEATURE_SHA=""
+if command -v git >/dev/null 2>&1; then
+    mkdir -p "$T/ggco"
+    git init -q --bare "$GGCO_BARE"
+    git clone -q "$GGCO_BARE" "$GGCO_WORK" 2>/dev/null
+    (
+        cd "$GGCO_WORK"
+        git config user.name t
+        git config user.email t@t
+        printf 'hello\n' > README.md
+        git add -A
+        git commit -qm init
+        git branch -M main
+        git push -q -u origin main
+        # 远端多一条 feature：指向一个本地还没有的提交
+        git checkout -q -B tmp main
+        git commit -q --allow-empty -m remote-only
+        git push -q origin tmp:feature
+        git push -q origin tmp:old
+        git checkout -q main
+        git branch -qD tmp
+    )
+    GGCO_FEATURE_SHA=$(git -C "$GGCO_BARE" rev-parse feature)
+    GGCO_OK=1
+fi
+
+# ---------------------------------------------------------------------------
 # env.zsh：zsh 层的用法报错
 # 这一节钉的就是"在公司敲了 cnp <路径> 没反应"那类事：
 # 命令必须明确告诉你"参数用错了/该用哪条命令"，而不是静默忽略或含糊其辞。
@@ -310,6 +342,80 @@ EOF
         *patchset*) ok "报错里给了用法" ;;
         *) bad "报错里没给用法：[$out]" ;;
     esac
+
+    # ---- ggco：临时裸仓里 fetch -> checkout（同一张表跑两个 shell）----
+    if [ "$GGCO_OK" != 1 ]; then
+        echo "  （没装 git，ggco 这几条跳过）"
+    else
+        echo "== env.$SHELL_NAME：ggco（临时裸仓，不联网）=="
+
+        srun "cd $GGCO_WORK
+            git checkout -q HEAD -- . 2>/dev/null
+            git checkout -q main 2>/dev/null
+            git branch -qD feature 2>/dev/null
+            ggco feature"
+        chk "ggco 新分支：退出码 0" "$rc" "0"
+        chk "ggco 新分支：HEAD 就是远端那条 ref" \
+            "$(git -C "$GGCO_WORK" rev-parse HEAD)" "$GGCO_FEATURE_SHA"
+        chk "ggco 新分支：本地建了跟踪分支" \
+            "$(git -C "$GGCO_WORK" rev-parse --abbrev-ref HEAD)" "feature"
+        case $out in
+            *"现在在 feature"*) ok "ggco 打印落在哪条分支上" ;;
+            *) bad "ggco 没说落在哪：[$out]" ;;
+        esac
+
+        srun "cd $GGCO_WORK
+            git checkout -q HEAD -- . 2>/dev/null
+            git checkout -q main 2>/dev/null
+            git branch -qD old 2>/dev/null
+            git branch old main
+            ggco old"
+        chk "ggco 本地同名分支落后：退出码 1" "$rc" "1"
+        case $out in
+            *"不是刚 fetch"*) ok "ggco 明说本地分支和刚 fetch 的不一致" ;;
+            *) bad "ggco 没点出本地分支没跟上：[$out]" ;;
+        esac
+        chk "ggco 不 reset 本地分支" \
+            "$(git -C "$GGCO_WORK" rev-parse old)" "$(git -C "$GGCO_WORK" rev-parse main)"
+
+        srun "cd $GGCO_WORK
+            git checkout -q HEAD -- . 2>/dev/null
+            ggco no-such-branch"
+        chk "ggco 远端没有这个 ref：退出码 1" "$rc" "1"
+        case $out in
+            *"远端没有这个 ref"*) ok "ggco 说清是远端没有这个 ref" ;;
+            *) bad "ggco 的报错不清楚：[$out]" ;;
+        esac
+
+        srun "cd $GGCO_WORK
+            git checkout -q HEAD -- . 2>/dev/null
+            git checkout -q main 2>/dev/null
+            printf 'x\n' >> README.md
+            git add -A
+            ggco feature"
+        chk "ggco 工作树有本地改动：退出码 1" "$rc" "1"
+        case $out in
+            *"工作树有本地改动"*) ok "ggco 提示先 stash / commit" ;;
+            *) bad "ggco 没说工作树脏：[$out]" ;;
+        esac
+        # 收拾干净，别影响下一个 shell 的那一遍
+        git -C "$GGCO_WORK" checkout -q HEAD -- . 2>/dev/null || true
+
+        srun 'ggco'
+        chk "ggco 不带参数：退出码 2" "$rc" "2"
+        case $out in
+            *"Usage: ggco"*) ok "ggco 打出了用法" ;;
+            *) bad "ggco 没打用法：[$out]" ;;
+        esac
+
+        srun "cd $T
+            ggco main"
+        chk "ggco 不在 git 仓库里：退出码 1" "$rc" "1"
+        case $out in
+            *"不是 git 仓库"*) ok "ggco 说清不在 git 仓库里" ;;
+            *) bad "ggco 的报错不清楚：[$out]" ;;
+        esac
+    fi
 done
 
 printf '\n%d 通过, %d 失败\n' "$pass" "$fail"

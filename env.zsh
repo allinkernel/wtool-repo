@@ -741,6 +741,73 @@ ggcp () {
     return 0
 }
 
+# ggco <分支|tag|commit>
+#   把远端的一个 ref 抓下来，然后**直接切过去**（ggcp 是抓下来 cherry-pick，这条不动提交历史）。
+#   远端用和 ggcp 同一套：polygerrit -> 清单里声明的 remote -> 第一条 remote。
+#   本地已经有同名分支时**不 reset 它**：切过去比一下，和刚 fetch 的对不上就报出来。
+ggco () {
+    if [[ $# -ne 1 || $1 == -* ]]; then
+        echo "Usage: ggco <分支|tag|commit>" >&2
+        echo "  ggco main         # 切到远端 main（本地没有就建跟踪分支）" >&2
+        echo "  ggco v1.2.3       # 切到 tag（detached HEAD）" >&2
+        echo "  ggco 1a2b3c4      # 切到某个 commit（远端得允许按 SHA 取）" >&2
+        return 2
+    fi
+    local ref=$1
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        echo "ggco: 当前目录不是 git 仓库" >&2
+        return 1
+    fi
+
+    local dirty
+    dirty=$(git status --porcelain --untracked-files=no 2>/dev/null)
+    if [[ -n ${dirty} ]]; then
+        echo "ggco: 工作树有本地改动，先 git stash 或 git commit（本命令不覆盖本地改动）：" >&2
+        print -r -- ${dirty} >&2
+        return 1
+    fi
+
+    local remote
+    if ! remote=$(_gerrit_project_remote); then
+        echo "ggco: 在 $(pwd) 里找不到可用的 git remote。现有的：" >&2
+        git remote -v >&2
+        return 1
+    fi
+
+    local want
+    if ! git fetch ${remote} ${ref}; then
+        echo "ggco: 远端没有这个 ref（或取不到）：${remote} ${ref}" >&2
+        echo "      看看远端有什么：git ls-remote --heads --tags ${remote}" >&2
+        return 1
+    fi
+    if ! want=$(git rev-parse --verify 'FETCH_HEAD^{commit}' 2>/dev/null); then
+        echo "ggco: ${remote} 的 ${ref} 取下来不是 commit，切不过去" >&2
+        return 1
+    fi
+
+    local head branch
+    if git show-ref --verify --quiet "refs/heads/${ref}"; then
+        git checkout ${ref} || return 1
+        head=$(git rev-parse HEAD)
+        if [[ ${head} != ${want} ]]; then
+            echo "ggco: 本地分支 ${ref} 停在 ${head}，不是刚 fetch 的 ${want}" >&2
+            echo "      本命令不 reset 本地分支；要更新就自己 git merge --ff-only FETCH_HEAD" >&2
+            return 1
+        fi
+    else
+        if ! git checkout ${ref}; then
+            echo "ggco: git checkout ${ref} 失败（远端有这个 ref 吗？本地有同名文件挡着？）" >&2
+            return 1
+        fi
+        head=$(git rev-parse HEAD)
+    fi
+
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    [[ ${branch} == HEAD ]] && branch=detached
+    echo "ggco: $(pwd) 现在在 ${branch} @ $(git rev-parse --short HEAD)（来自 ${remote} ${ref}）"
+    return 0
+}
+
 # 项目名/路径 -> 绝对路径（不 cd）
 cdd_path () {
     local target=$1 css_dir repo_path

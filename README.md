@@ -20,7 +20,8 @@
 ## 功能说明
 
 所有命令都在 **repo 工作区内**使用（一路往上找得到 `.repo`）；不在工作区里会报
-`not in repo dir!!!`。
+`not in repo dir!!!`。**例外是 `ggco`**：它只要求当前目录是个 git 仓库
+（remote 那一步再按下面的顺序挑），不要求站在 repo 工作区里。
 
 ### 命令总表
 
@@ -36,6 +37,7 @@
 | git | `cnb` / `cnr` | 当前项目在清单里声明的分支 / remote |
 | git | `gb` | **打印** push/pull/fetch 命令（只在有 `polygerrit` remote 时多列一行送检命令） |
 | git | `gbb` | 按 `gb` 给出的命令**真的推**（公司 gerrit 环境可切成送检） |
+| git | `ggco <分支\|tag\|commit>` | 抓远端某个 ref 下来并**直接切过去**（fetch → checkout） |
 | gerrit | `ggcp <change> [patchset]` | 把 gerrit 上某个 patchset 抓回本地、cd 到对应项目、cherry-pick |
 | gerrit | `gchk <change>` | 这个 change 有没有 +2 / 有没有 merged（决定能不能推 main） |
 | gerrit | `gq [-r] <change>` | change 摘要（`-r`/`--raw` 出原始 JSON） |
@@ -168,7 +170,44 @@ polygerrit: git push polygerrit HEAD:refs/for/<branch>   # 送检（+2 后才进
      改法就是脚本里那个 `need_to_review=1`，见代码注释）。
 3. 依赖 GNU grep 的 `-P`（PCRE）。
 
-### 6. gerrit：`ggcp` / `gchk` / `gq` / `gpush`
+### 6. 抓取与 gerrit：`ggco` / `ggcp` / `gchk` / `gq` / `gpush`
+
+#### `ggco <分支|tag|commit>` —— 抓远端一个 ref，直接切过去
+
+```sh
+ggco main         # 切到远端 main（本地没有就建跟踪分支）
+ggco v1.2.3       # tag（detached HEAD）
+ggco 1a2b3c4      # commit（远端得允许按 SHA 取）
+```
+
+只做一件事：**fetch 之后直接 checkout**。和 `ggcp` 的区别是它不 cherry-pick、
+不动你已有的提交；它也不 push、不 reset（`--hard` 更没有）、不用 `checkout -f`。步骤：
+
+1. 参数不是 1 个（或以 `-` 开头）→ `Usage: ggco <分支|tag|commit>` + 三行例子（stderr），返回 **2**；
+2. 不在 git 仓库里 → `ggco: 当前目录不是 git 仓库`，返回 1；
+3. 工作树有**已跟踪文件**的本地改动（未跟踪文件不算）→
+   `ggco: 工作树有本地改动，先 git stash 或 git commit（本命令不覆盖本地改动）：`
+   加 `git status --porcelain` 的那几行，返回 1；
+4. 选 remote：和 `ggcp` 同一套 —— 有 `polygerrit` 就用它，否则用清单里声明的（`cnr`），
+   再否则用第一条；一条都没有 → `ggco: 在 <目录> 里找不到可用的 git remote。现有的：`
+   加 `git remote -v`，返回 1；
+5. `git fetch <remote> <ref>`；失败 →
+   `ggco: 远端没有这个 ref（或取不到）：<remote> <ref>` +
+   `看看远端有什么：git ls-remote --heads --tags <remote>`，返回 1；
+6. 取下来的东西必须是 commit（`git rev-parse --verify FETCH_HEAD^{commit}`），
+   不是 → `ggco: <remote> 的 <ref> 取下来不是 commit，切不过去`，返回 1；
+7. 切过去：
+   - 本地**没有**同名分支 → `git checkout <ref>`：分支名会建成本地跟踪分支
+     （`git fetch` 已经把 tracking ref 更新了），tag / commit 就是 detached HEAD；
+   - 本地**有**同名分支 → `git checkout <ref>` 之后和刚 fetch 的 commit 比一下：
+     一样就成功；不一样 →
+     `ggco: 本地分支 X 停在 <A>，不是刚 fetch 的 <B>` +
+     `本命令不 reset 本地分支；要更新就自己 git merge --ff-only FETCH_HEAD`，返回 1。
+
+成功时打一行：`ggco: <目录> 现在在 <分支名|detached> @ <短 sha>（来自 <remote> <ref>）`。
+
+> `ggco` 不需要 gerrit 服务器：remote 名和 URL 都从当前仓库自己取，
+> 所以普通 git 仓库（只有 `origin`）里也能用。
 
 #### 服务器地址是怎么找到的（先命中先用）
 
@@ -354,6 +393,10 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 | `ggcp: 抓到的 commit（X）和 gerrit 说的（Y）对不上，这次不 cherry-pick。用 gq N 看看 patchset 列表` | patchset/ref 选错了（或 change 刚被更新）；`gq` 确认后再来 |
 | `ggcp: cherry-pick 冲突了。…` | 按提示 `git cherry-pick --continue` 或 `--abort` |
 | `ggcp: cherry-pick 没跑起来（工作区有没提交的改动？先 commit 或 git stash）` | 工作区脏 |
+| `ggco: 工作树有本地改动，先 git stash 或 git commit（本命令不覆盖本地改动）：` | 先把已跟踪文件的改动 stash / commit 掉；未跟踪文件不影响它 |
+| `ggco: 远端没有这个 ref（或取不到）：<remote> <ref>` | ref 名拼错、或 fetch 本身失败（网络/权限）。按提示 `git ls-remote --heads --tags <remote>` 看远端有什么 |
+| `ggco: 本地分支 X 停在 A，不是刚 fetch 的 B` | 本地同名分支和远端不一致；本命令**不会**替你 reset。按提示 `git merge --ff-only FETCH_HEAD`，或自己决定怎么处理 |
+| `ggco: 在 <目录> 里找不到可用的 git remote。现有的：` | 这个仓库一个 remote 都没有（新的 `git init`？）；先 `git remote add origin <url>` |
 | `gpush: 这个仓库没有 remote 'polygerrit'。现有的：` | 换 remote：`gpush <remote>` |
 | `rscur: TODO: repo list has no such dir before download it!!!` | 这个目录还没 sync 下来，`repo list` 里没有它的子项目 |
 | `rs` / `rscur` 把本地改动弄没了 | 它们带 `--force-sync -d`，就是会丢弃本地改动/强制覆盖 —— 跑之前先 commit 或 stash |
@@ -363,16 +406,19 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 ## 测试
 
 ```sh
-sh tests/run_tests.sh      # 77 条（三段合计，以脚本最后打印的通过/失败数为准）
+sh tests/run_tests.sh      # 107 条（四段合计，以脚本最后打印的通过/失败数为准）
 ```
 
-测试分三段（都在临时目录里造"公司环境"的假工作区，不碰真工作区）：
+测试分四段（都在临时目录里造"公司环境"的假工作区 / 假裸仓，不碰真工作区）：
 
 1. **`my_repo.py`**（基本查询、分支/remote 解析、`local_manifests` 的增删、`list`、错误处理、
    "没有 `.repo/repo` 也能跑"）；
 2. **`gerrit_query.py`**（patchset 选择、`check` 的退出码、`list` / `raw` / 坏输入）；
-3. **`env.zsh` / `env.bash` 对比**（`cnp` / `cdd` 的用法报错、`ggcp` 的参数解析 —— 不连网），
-   **同一张用例表跑两个 shell**，用来钉住"两份等价"。
+3. **`env.zsh` / `env.bash` 对比**（`cnp` / `cdd` 的用法报错、`ggcp` 的参数解析、
+   `ggco` 端到端 —— 不连网），**同一张用例表跑两个 shell**，用来钉住"两份等价"；
+4. **`ggco` 的裸仓夹具**（本地 `git init --bare` + clone，`git push` 只推到那个临时裸仓）：
+   新分支 fetch→checkout 后 `HEAD` 必须等于裸仓那条 ref、本地同名分支落后时拒绝并保持原位、
+   远端没有这个 ref、工作树脏、用法错误、不在 git 仓库里 —— 每一条的退出码和报错文字都断言。
 
 夹具故意造成"公司环境"的样子：**没有 `.repo/repo`**、清单里有 `<include>`、
 `local_manifests` 里 `remove-project` / 覆盖 revision。
@@ -381,9 +427,11 @@ sh tests/run_tests.sh      # 77 条（三段合计，以脚本最后打印的通
 
 - **python3**（3.6+）：`my_repo.py` / `gerrit_query.py` 只用标准库，不装第三方包。
 - **zsh 或 bash**：两个 shell 各一份 env，命令、报错、退出码一致。
-  `tests/run_tests.sh` 用**同一张用例表**把两个 shell 都跑一遍，但它覆盖的是
-  `cnp` / `cnn` / `cdd` 的报错与退出码、以及 `ggcp` 的拆参数；
+  `tests/run_tests.sh` 用**同一张用例表**把两个 shell 都跑一遍，它覆盖的是
+  `cnp` / `cnn` / `cdd` 的报错与退出码、`ggcp` 的拆参数、以及 `ggco` 的端到端；
   其余命令的"两份等价"靠的是**同改两份文件**，不是测试。
+- **git**：`ggco` 全程只用 `git`（`rev-parse` / `status` / `fetch` / `checkout` /
+  `show-ref` / `remote`），不需要 python、不需要 ssh 配置（remote URL 是 https 也能用）。
 - **ssh**：`ggcp` / `gchk` / `gq` 走 `ssh <gerrit> gerrit query`，公钥要在 gerrit 上登记过。
 - **GNU grep（要 `-P`）**：`gbb` 挑命令行用。
 - **`rg`（ripgrep，要 `--pcre2`）** 和 **`nproc`**：`rscur` 用；
@@ -415,7 +463,9 @@ sh tests/run_tests.sh      # 77 条（三段合计，以脚本最后打印的通
 | `env.zsh` / `env.bash` | 全部命令 + 内联 `_up_to_have_dir` + 两个工具路径（zsh / bash 两份，等价） |
 | `my_repo.py` | manifest 查询工具（自包含解析，见上） |
 | `gerrit_query.py` | 解析 `gerrit query --format=JSON` 的输出（供 `ggcp` / `gchk` / `gq` 用） |
-| `tests/run_tests.sh` | 上面两个 python 工具的测试 + `env.zsh`/`env.bash` 的行为对比 |
+| `tests/run_tests.sh` | 上面两个 python 工具的测试 + `env.zsh`/`env.bash` 的行为对比（含 `ggco` 的裸仓端到端） |
+| `architecture.md` | 代码现在长什么样（现状，只写现状） |
+| `BACKLOG.md` | 这个项目"接下来做什么、做到哪了" |
 
 > 老版本 README 里"安装"一节写的是叫用户自己 `wtool install`；
 > 现在安装口径统一收到 wtool 的 README（本仓库不再讲怎么装）。

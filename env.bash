@@ -717,6 +717,74 @@ ggcp () {
     return 0
 }
 
+# ggco <分支|tag|commit>
+#   把远端的一个 ref 抓下来，然后**直接切过去**（ggcp 是抓下来 cherry-pick，这条不动提交历史）。
+#   远端用和 ggcp 同一套：polygerrit -> 清单里声明的 remote -> 第一条 remote。
+#   本地已经有同名分支时**不 reset 它**：切过去比一下，和刚 fetch 的对不上就报出来。
+ggco () {
+    if [ $# -ne 1 ] || [ "$1" = -* ]; then
+        printf 'Usage: ggco <分支|tag|commit>\n' >&2
+        printf '  ggco main         # 切到远端 main（本地没有就建跟踪分支）\n' >&2
+        printf '  ggco v1.2.3       # 切到 tag（detached HEAD）\n' >&2
+        printf '  ggco 1a2b3c4      # 切到某个 commit（远端得允许按 SHA 取）\n' >&2
+        return 2
+    fi
+    local ref=$1
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        printf 'ggco: 当前目录不是 git 仓库\n' >&2
+        return 1
+    fi
+
+    local dirty
+    dirty=$(git status --porcelain --untracked-files=no 2>/dev/null)
+    if [ -n "${dirty}" ]; then
+        printf 'ggco: 工作树有本地改动，先 git stash 或 git commit（本命令不覆盖本地改动）：\n' >&2
+        printf '%s\n' "${dirty}" >&2
+        return 1
+    fi
+
+    local remote
+    if ! remote=$(_gerrit_project_remote); then
+        printf 'ggco: 在 %s 里找不到可用的 git remote。现有的：\n' "$(pwd)" >&2
+        git remote -v >&2
+        return 1
+    fi
+
+    local want
+    if ! git fetch ${remote} ${ref}; then
+        printf 'ggco: 远端没有这个 ref（或取不到）：%s %s\n' "${remote}" "${ref}" >&2
+        printf '      看看远端有什么：git ls-remote --heads --tags %s\n' "${remote}" >&2
+        return 1
+    fi
+    if ! want=$(git rev-parse --verify 'FETCH_HEAD^{commit}' 2>/dev/null); then
+        printf 'ggco: %s 的 %s 取下来不是 commit，切不过去\n' "${remote}" "${ref}" >&2
+        return 1
+    fi
+
+    local head branch
+    if git show-ref --verify --quiet "refs/heads/${ref}"; then
+        git checkout ${ref} || return 1
+        head=$(git rev-parse HEAD)
+        if [ "${head}" != "${want}" ]; then
+            printf 'ggco: 本地分支 %s 停在 %s，不是刚 fetch 的 %s\n' "${ref}" "${head}" "${want}" >&2
+            printf '      本命令不 reset 本地分支；要更新就自己 git merge --ff-only FETCH_HEAD\n' >&2
+            return 1
+        fi
+    else
+        if ! git checkout ${ref}; then
+            printf 'ggco: git checkout %s 失败（远端有这个 ref 吗？本地有同名文件挡着？）\n' "${ref}" >&2
+            return 1
+        fi
+        head=$(git rev-parse HEAD)
+    fi
+
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    [ "${branch}" = "HEAD" ] && branch=detached
+    printf 'ggco: %s 现在在 %s @ %s（来自 %s %s）\n' \
+        "$(pwd)" "${branch}" "$(git rev-parse --short HEAD)" "${remote}" "${ref}"
+    return 0
+}
+
 # 项目名/路径 -> 绝对路径（不 cd）
 cdd_path () {
     local target=$1 css_dir repo_path
