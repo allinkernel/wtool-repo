@@ -457,6 +457,19 @@ GPUN_GB_STUB="gb () { printf '%s\n' 'git push origin HEAD:refs/for/main' 'git pu
 # 这一节钉的就是"在公司敲了 cnp <路径> 没反应"那类事：
 # 命令必须明确告诉你"参数用错了/该用哪条命令"，而不是静默忽略或含糊其辞。
 # ---------------------------------------------------------------------------
+# cdd 的"点参数"夹具（下面同一张表跑两个 shell 用）：
+#
+#   $DOT_DEEP = $T/dots/l1/…/l8   8 层深。8 个点 = 往上 7 层 -> $T/dots/l1
+#                                 （zsh 原生那条路只到 6 个点，这条是钉差异用的）
+#   $WS/kernel/common/...         名字**真叫 `...`** 的目录：钉"点参数优先于现存目录"
+#
+# 这棵树**故意不在 repo 工作区里**（没有 .repo）：点参数不查清单，站在哪儿都能往上跳。
+# ---------------------------------------------------------------------------
+DOT_ROOT="$T/dots"
+DOT_DEEP="$DOT_ROOT/l1/l2/l3/l4/l5/l6/l7/l8"
+mkdir -p "$DOT_DEEP" "$WS/kernel/common/..."
+
+# ---------------------------------------------------------------------------
 # 同一个用例表跑两个 shell：env.zsh 和 env.bash 必须行为一致
 # （命令名、退出码、报错文字都一样；只有实现语法不同）
 for SHELL_NAME in zsh bash; do
@@ -516,6 +529,58 @@ EOF
     chk "cdd 到项目名能跳过去" "$out" "$WS/device/emui/generic_a15"
     srun 'cdd external/zlib >/dev/null 2>&1; cdd kernel/common >/dev/null 2>&1 && pwd'
     chk "cdd 到相对 repo 根的路径也能跳" "$out" "$WS/kernel/common"
+
+    # ---- cdd 的点参数：N 个点 = 往上 N-1 层（`..` 1 层、`...` 2 层、`....` 3 层）----
+    # 判据一律用 pwd 的**完整绝对路径**，不用 `cd -`、不拿相对路径比。
+    echo "== env.$SHELL_NAME：cdd 的点参数 =="
+
+    srun 'cdd .. >/dev/null 2>&1 && pwd'
+    chk "cdd .. ：上一级（1 层）" "$out" "$WS/kernel"
+    srun 'cdd ... >/dev/null 2>&1 && pwd'
+    chk "cdd ... ：上两级（夹具里那个真叫 ... 的目录不抢）" "$out" "$WS"
+    srun 'cdd .... >/dev/null 2>&1 && pwd'
+    chk "cdd .... ：上三级" "$out" "$T"
+
+    # 超过 6 个点：8 个点 = 往上 7 层。zsh 原生（oh-my-zsh 的 global alias）只到 6 个点，
+    # 这条就是盯着"我们不限点数"这个差异的。
+    srun "cd '$DOT_DEEP' && cdd ........ >/dev/null 2>&1 && pwd"
+    chk "cdd 8 个点（zsh 原生只到 6 个）：往上 7 层" "$out" "$DOT_ROOT/l1"
+
+    # 点到根：过了 / 就停在 /，**不算错**（退出码 0，一个字都不打）
+    srun 'cdd ............'
+    chk "cdd 12 个点（从浅目录跳过根）：退出码 0" "$rc" "0"
+    chk "cdd 12 个点：一个字的输出都没有" "$out" ""
+    srun 'cdd ............ && pwd'
+    chk "cdd 12 个点：停在 /" "$out" "/"
+    srun 'cd / && cdd ... >/dev/null 2>&1 && pwd'
+    chk "cdd 站在 / 上再往上：还是 /" "$out" "/"
+
+    # 点参数不查清单：在不带 .repo 的目录里也能往上跳（老的三条路都得先找到 .repo）
+    srun "cd '$DOT_DEEP' && cdd ... >/dev/null 2>&1 && pwd"
+    chk "点参数不需要 .repo（不在工作区里也能跳）" "$out" "$DOT_ROOT/l1/l2/l3/l4/l5/l6"
+
+    # 不是点参数的照旧：`..x` 含别的字符、单个 `.` 只有 1 个点 —— 都不许被点参数抢走
+    srun 'cdd ..x'
+    chk "cdd ..x（不是点参数）：退出码 1" "$rc" "1"
+    case $out in
+        *"清单里没有"*) ok "cdd ..x：还是走"清单里没有"那条老路" ;;
+        *) bad "cdd ..x 的报错不对：[$out]" ;;
+    esac
+    srun 'cdd . >/dev/null 2>&1 && pwd'
+    chk "cdd .（只有 1 个点，不算点参数）：还是原地" "$out" "$WS/kernel/common"
+
+    # zsh 专属：真机上 oh-my-zsh 给 `...`~`......` 挂了 **global alias**
+    # （`alias -g ...='../..'`，见 shell/oh-my-zsh/lib/directories.zsh），
+    # 所以交互式 zsh 里敲 `cdd ...`，cdd 收到的其实是 `../..` —— 走"现存目录"那条。
+    # 这里把那些 alias 原样复现一遍，钉住"两条路落的点一样"。
+    if [ "$SHELL_NAME" = zsh ]; then
+        srun 'alias -g ...="../.."
+cdd ... >/dev/null 2>&1 && pwd'
+        chk "zsh 有 global alias 时（cdd 收到 ../..）：落的点一样" "$out" "$WS"
+        srun 'alias -g ....="../../.."
+cdd .... >/dev/null 2>&1 && pwd'
+        chk "zsh 有 global alias 时（cdd 收到 ../../..）：落的点一样" "$out" "$T"
+    fi
 
     echo "== env.$SHELL_NAME：ggcp 的参数解析（不连网，只测拆参数）=="
     srun '_gerrit_parse_change_arg 1234 && printf "%s\n" "$_GERRIT_CHANGE"'

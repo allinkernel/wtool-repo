@@ -34,7 +34,7 @@
 | 定位 | `cs` / `css` | 走到 / 打印含 `.repo` 的目录（repo 根） |
 | 定位 | `ct` / `ctt` | 走到 / 打印含 `.git` 的目录（单仓根） |
 | 定位 | `cm` / `cmm` | 走到 / 打印 `<repo 根>/.repo/manifests` |
-| 定位 | `cdd <目标>` | cd 到某个项目（可按项目名、路径、现存文件/目录、**gerrit 提交编号**） |
+| 定位 | `cdd <目标>` | cd 到某个项目（可按项目名、路径、现存文件/目录、**gerrit 提交编号**、**一串点往上跳**） |
 | 定位 | `cdd_path <目标>` | 同上但只打印绝对路径，不 cd（`ggcp` 内部用） |
 | 查询 | `cnp` / `cnn` | 当前项目在清单里的路径 / 名字（**都不带参数**） |
 | 查询 | `repo_mfst_get_*` | 7 个查询函数，见下（包 `my_repo.py`） |
@@ -70,6 +70,16 @@
 
 `cdd` 按这个顺序找目标（命中即停）：
 
+0. **一串点**（`..` / `...` / `....` / …）：**N 个点 = 往上 N-1 层**。
+   `..` = 上一层、`...` = 上两层、`....` = 上三层、`........`（8 个点）= 上七层；
+   - **不限点数**（没有"最多 6 个点"这回事），**zsh 和 bash 都认**；
+   - **不用站在 repo 工作区里**（它不查清单，在任何目录里都能往上跳）；
+   - 点到头了就**停在 `/`**：退出码 **0**、什么都不打印（**不算错**）；
+     站在 `/` 上再往上还是 `/`；
+   - 只有"**整个参数都是点、且至少 2 个点**"才算点参数：`..x`（含别的字符）、
+     `.`（只有 1 个点）都不算，照旧走下面 1~4 条；
+   - 点参数**优先于"现存目录"**：`cdd ...` 就是往上两层，哪怕当前目录里真有个
+     叫 `...` 的目录也不进去（`..` 本身就是个真目录，所以这一条得排在最前面判）。
 1. **目标当前就存在**：是文件 → `cd` 到它的父目录；是目录 → `cd` 进去；
 2. **清单里的项目名**（如 `allinkernel/wtool.git`）→ `cd` 到 `<repo 根>/<清单里的 path>`；
 3. **相对 repo 根的路径**（目录存在且在清单里有这个 path）→ `cd` 过去；
@@ -81,7 +91,7 @@
 
 | 情况 | 报错 | 返回码 |
 |---|---|---|
-| 参数个数 ≠ 1 | `Usage: cdd TARGET` + 四行说明 | 2 |
+| 参数个数 ≠ 1 | `Usage: cdd TARGET` + 五行说明 | 2 |
 | 一路往上找不到 `.repo` | `cdd: 当前目录不在 repo 工作区里（一路往上都找不到 .repo）` + `想按名字跳转得先站在 repo 工作区里` | 1 |
 | 清单里有这个项目、但目录还不存在 | `cdd: 项目 'X' 已在清单里，但目录还不存在：` + 绝对路径 + `先 repo sync X` | 1 |
 | 名字和路径都对不上 | `cdd: 清单里没有 'X' 这个项目名或路径` + `看看都有什么：<my_repo.py> list --root <root>` | 1 |
@@ -89,10 +99,23 @@
 | 知道不了 gerrit 在哪 | `cdd: 按提交编号跳转得先知道 gerrit 服务器在哪：` + 两条途径 | 1 |
 | gerrit 连不上 / 查不到这个编号 | `cdd: 连 <user>@<host>:<port> 查询 change N 失败` / `cdd: gerrit 上查不到 change N（编号对不对？有没有权限？）` | 1 |
 
+> **点参数（第 0 条）没有自己的报错**：命中点参数就往上跳 —— 最坏是停在 `/`（退出码 0），
+> 点参数相关的报错根本不存在。不是点参数就交给下面几条，去报它们自己的错。
+
+> **和 zsh 那套 `cd ...` 的关系**：zsh 自己**不认** `cd ...` —— 那是 **oh-my-zsh**
+> 的 `lib/directories.zsh` 挂的 4 条 global alias（`...` → `../..`、`....` → `../../..`、
+> `.....` → `../../../..`、`......` → `../../../../..`）。所以那条路**只到 6 个点**
+> （7 个点就 `no such file or directory`），而且 global alias 是 zsh 专有物，
+> **bash 里没有对应东西**（bash 里 `cd ...` 直接 `No such file or directory`）。
+> `cdd` 的点参数是自己实现的：两个 shell 都有、几个点都行。
+> 顺带一提，真机交互式 zsh 里那 4 条 alias 会**先把 `cdd ...` 改写成 `cdd ../..`**，
+> 于是走的是下面第 1 条（现存目录）—— 落点一样，`cdd` 不依赖那套 alias。
+
 > 数字这条路是**加在第 1~3 条之后**的：现存目录/文件、清单项目名、相对路径都优先，
 > 所以原来的两种用法行为不变（`cdd 12345` 在真有个叫 `12345` 的目录时，还是进那个目录）。
 
 `cdd_path` 是 `cdd` 的"不跳转版"：只打印绝对路径，供 `ggcp` 之类的脚本用。
+**点参数只有 `cdd` 有**：`cdd_path` 照旧只认"清单里的名字/路径"（它不 cd，也就没有"往上跳"这回事）。
 
 ### 3. 问"我在哪个项目"：`cnp` / `cnn` / `cnb` / `cnr`
 
@@ -515,6 +538,8 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 | `cdd: N 对应的仓库名 X 在当前 repo 工作区不存在` | 这个 gerrit 编号对应的项目还没 sync 下来（或用的是另一份清单）：`repo sync X` |
 | `cdd: 按提交编号跳转得先知道 gerrit 服务器在哪：` | 按提示设 `WTOOL_GERRIT_HOST`，或写 `<repo 根>/.gerrit/client.conf` |
 | `cdd: gerrit 上查不到 change N（编号对不对？有没有权限？）` | 编号错、或这个编号不在这台 gerrit 上 |
+| zsh 里 `cd ...` 好使、`cd .......`（7 个点）报 `no such file or directory` | 那是 oh-my-zsh 的 4 条 global alias（只到 6 个点），不是 zsh 本体；用 `cdd .......` —— 它不限点数，bash 里也一样 |
+| `cdd ..x` 报 `cdd: 清单里没有 '..x' 这个项目名或路径`（以为它会往上跳） | 只有"**整个参数都是点、且至少 2 个点**"才算点参数；含别的字符的照旧按项目名/路径解析 |
 | `ggcp: 不知道 gerrit 服务器在哪。请任选一种方式告诉它：` | 按提示设 `WTOOL_GERRIT_HOST` / 写 `~/.wtool/gerrit.conf` / 放 `<repo 根>/.gerrit/client.conf` |
 | `ggcp: 连 <user>@<host>:<port> 查询失败` | ssh 不通或公钥没在 gerrit 登记；先手敲一次 `ssh -p <port> <user>@<host> gerrit version` |
 | `打补丁失败`（红）+ `ggcp: change N 查不到（编号对不对？有没有权限？）` | 编号错或没权限 |
@@ -541,7 +566,7 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 ## 测试
 
 ```sh
-sh tests/run_tests.sh      # 309 条（六段合计，以脚本最后打印的通过/失败数为准）
+sh tests/run_tests.sh      # 335 条（六段合计，以脚本最后打印的通过/失败数为准）
 ```
 
 测试分六段（都在临时目录里造"公司环境"的假工作区 / 假裸仓 / 假 gerrit，不碰真工作区、不连网）：
@@ -550,7 +575,10 @@ sh tests/run_tests.sh      # 309 条（六段合计，以脚本最后打印的�
    "没有 `.repo/repo` 也能跑"）；
 2. **`gerrit_query.py`**（patchset 选择、`check` 的退出码、`list` / `raw` / 坏输入、
    `commits` 展开与 `table` 打表）；
-3. **`env.zsh` / `env.bash` 对比**（`cnp` / `cdd` 的用法报错、`ggcp` 的参数坍缩、颜色退化、
+3. **`env.zsh` / `env.bash` 对比**（`cnp` / `cdd` 的用法报错、**`cdd` 的点参数**
+   （`..` / `...` / `....` 各落哪一层、8 个点、点到根停在 `/`、`..x` 和 `.` 不被当点参数、
+   不在工作区里也能跳、zsh 那 4 条 global alias 把 `...` 改写成 `../..` 时落点一样）、
+   `ggcp` 的参数坍缩、颜色退化、
    `ggco` 端到端、`gpun` 端到端 —— 不连网），**同一张用例表跑两个 shell**，
    用来钉住"两份等价"；
 4. **`ggco` 的裸仓夹具**（本地 `git init --bare` + clone，`git push` 只推到那个临时裸仓）：
@@ -596,7 +624,8 @@ sh tests/run_tests.sh      # 309 条（六段合计，以脚本最后打印的�
 - **python3**（3.6+）：`my_repo.py` / `gerrit_query.py` 只用标准库，不装第三方包。
 - **zsh 或 bash**：两个 shell 各一份 env，命令、报错、退出码一致。
   `tests/run_tests.sh` 用**同一张用例表**把两个 shell 都跑一遍，它覆盖的是
-  `cnp` / `cnn` / `cdd` 的报错与退出码、`ggcp` 的拆参数、`ggco` 与 `gpun` 的端到端；
+  `cnp` / `cnn` / `cdd`（含点参数）的报错、落点与退出码、`ggcp` 的拆参数、
+  `ggco` 与 `gpun` 的端到端；
   其余命令的"两份等价"靠的是**同改两份文件**，不是测试。
 - **git**：`ggco` / `gpun` 全程只用 `git`（`ggco`：`rev-parse` / `status` / `fetch` /
   `checkout` / `show-ref` / `remote`；`gpun`：`pull`），不需要 python、不需要 ssh 配置
@@ -625,6 +654,7 @@ sh tests/run_tests.sh      # 309 条（六段合计，以脚本最后打印的�
 | `_up_to_have_dir` 依赖外部 source 链 | 内联在 env 文件里 | 本项目停用 `source_all_env.sh` 后要自包含 |
 | `my_repo.py` import repo 内部 `manifest_xml` | 自己解析 XML | 公司机器可能是 go 版 repo / 发布包里没有 `.repo/repo`，import 那条路会断 |
 | 无 | `ggcp` / `gchk` / `gq` / `gpush` | gerrit 检视流程 |
+| `cdd` 的**点参数**（用户 2026-10-09 说"mytool 就有这个功能，wtool 你给我删了"） | 加回来：`cdd ..` / `cdd ...` / `cdd ....` …，N 个点 = 往上 N-1 层，**不限点数**、**bash 也认**、点到根停在 `/` | wtool 中途丢了这条；zsh 那边只有 oh-my-zsh 的 4 条 global alias（≤6 个点），bash 完全没有 |
 
 ## 文件
 

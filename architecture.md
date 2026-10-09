@@ -42,6 +42,7 @@ GitHub 仓库名仍是 `allinkernel/wtool-repo`，2026-10-04 由 `tools/repo` �
 | 正则捕获 | `${match[1]}` | `BASH_REMATCH[1]` |
 | 数字判断 | `<->` glob | `[[ =~ ^[0-9]+$ ]]` |
 | 打印原样字符串 | `print -r --` | `printf '%s\n'` |
+| 判"是不是一串点" | `[[ ${t} == *[!.]* ]]` + `(( ${#t} >= 2 ))` | `case ${t} in *[!.]*)` + `[ ${#t} -ge 2 ]` |
 
 **已知不等价的一处**：`wninja` 在 `env.zsh` 里开头有 `[[ -z $ZSH_VERSION ]] && return`
 （bash 里 source 它是静默 no-op），`env.bash` 那份没有这道门。README §7 已注明。
@@ -51,7 +52,7 @@ GitHub 仓库名仍是 `allinkernel/wtool-repo`，2026-10-04 由 `tools/repo` �
 | 族 | 命令 | 说明 |
 |---|---|---|
 | 定位 | `cs` `css` `ct` `ctt` `cm` `cmm` | 往上找 `.repo` / `.git`，cd 或打印 |
-| 跳项目 | `cdd <目标>` `cdd_path <目标>` | 按"现存文件/目录 → 清单项目名 → 相对 repo 根的路径 → **纯数字 = gerrit 提交编号**"找 |
+| 跳项目 | `cdd <目标>` `cdd_path <目标>` | 按"**一串点（往上跳 N-1 层）** → 现存文件/目录 → 清单项目名 → 相对 repo 根的路径 → **纯数字 = gerrit 提交编号**"找 |
 | 当前项目 | `cnp` `cnn` `cnb` `cnr` | 路径 / 名字 / 分支 / remote（走 `my_repo.py`） |
 | 清单查询 | `repo_mfst_get_name_from_path` 等 7 个 | 包 `my_repo.py` 的对应动作 |
 | 推送 | `gb` `gpun` `gbb` | `gb` 只打印命令；`gpun` 把那条 `git pull … --unshallow` 真跑掉（助手可执行）；`gbb` 会 `eval` 真的推（**助手不执行**） |
@@ -93,6 +94,34 @@ GitHub 仓库名仍是 `allinkernel/wtool-repo`，2026-10-04 由 `tools/repo` �
 拿到项目名后**直接调 `cdd <项目名>`**（真的坍缩，不是复制一份逻辑）；
 仓库不在工作区时打 `cdd: N 对应的仓库名 X 在当前 repo 工作区不存在` 并返回 1。
 
+### 4.3 `cdd` 的点参数（2026-10-09 加回来）
+
+**判据**：`_cdd_dots_up <token>`（内部函数，两份 env 各一个、逐字对应）——
+"整个 token 都是点、且至少 2 个点"才成立，成立就打印**往上跳的层数** `N-1`
+（N = 点数），否则返回 1、什么都不打印。两份实现只差语法：
+zsh 用 `[[ ${token} == *[!.]* ]] && return 1`，bash 用 `case ${token} in *[!.]*) return 1 ;; esac`。
+
+**落点**：`cdd` 里**排在 `[[ -e $target ]]` 之前**（第 0 条），因为 `..` 本身就是个真目录，
+不先判就会被"现存目录"那条抢走；顺带也压住了"当前目录里真有个叫 `...` 的目录"——
+点参数就是往上跳，不做路径解析。不是点参数（含别的字符 / 只有 1 个点 / 空）就照旧往下走，
+`cdd` 原来的四条路一个字没改。
+
+**跳法**：把 `dots_up` 拼成 `..` + `/..` × (dots_up-1) 一次 `cd` 过去
+（`up_path=..; for ((i=1; i<dots_up; i++)); do up_path+=/..; done; cd ${up_path}`）——
+和 zsh 里 oh-my-zsh 那 4 条 global alias 展开出来的字符串逐字一样。
+**跳过根就停在 `/`**：`cd ../..` 这种路径由 shell 自己钳在 `/`，退出码 0、不打任何东西
+（实测 zsh 5.9 / bash 5.2 都是这个行为）。
+
+**为什么不用站在 repo 工作区里**：判点在 `css`（找 `.repo`）之前，所以不在工作区里
+也能往上跳；`Usage` 里多了一行（原来的"四行说明"变"五行说明"）。
+
+**和 zsh 原生的关系（读代码时容易搞错）**：zsh **本体不认** `cd ...`（`zsh -f -c 'cd ...'`
+报 `no such file or directory`），真机上好使是因为 **oh-my-zsh** 的
+`shell/oh-my-zsh/lib/directories.zsh` 挂了 4 条 `alias -g`
+（`...`~`......` → `../..`~`../../../../..`）—— 所以只到 6 个点，而且 bash 没有 global alias。
+交互式 zsh 里敲 `cdd ...`，`cdd` 收到的其实已经是 `../..`（走"现存目录"那条），
+落点与点参数一致；测试里有一条 zsh 专属用例把这个 alias 交互钉住了。
+
 ### 4.1 `ggco` 的实现要点
 
 - 参数：恰好 1 个、不以 `-` 开头；否则用法打 stderr、返回 2；
@@ -125,14 +154,17 @@ GitHub 仓库名仍是 `allinkernel/wtool-repo`，2026-10-04 由 `tools/repo` �
 
 ## 5. 测试
 
-`tests/run_tests.sh`（`#!/bin/sh` + `set -eu`，303 条，不连网）：
+`tests/run_tests.sh`（`#!/bin/sh` + `set -eu`，335 条，不连网）：
 
 1. `my_repo.py`：假工作区（`.repo/repo` **不存在**、`<include>`、`local_manifests`、
    remote/project 级 revision）上的查询、`list`、错误处理；
 2. `gerrit_query.py`：patchset 选择、`check` 的退出码、`list` / `raw` / 坏输入；
 3. `env.zsh` / `env.bash` 对比：`for SHELL_NAME in zsh bash`，同一张用例表跑两个 shell
-   （`cnp` / `cnn` / `cdd` 的报错与退出码、`ggcp` 参数坍缩与颜色退化、`ggco` 端到端、
-   `gpun` 端到端）；
+   （`cnp` / `cnn` / `cdd` 的报错与退出码、**`cdd` 的点参数**（落点用 `pwd` 的绝对路径断言）、
+   `ggcp` 参数坍缩与颜色退化、`ggco` 端到端、`gpun` 端到端）；
+   点参数的夹具：`$T/dots/l1/…/l8`（8 层深，给"8 个点"用）+
+   `$WS/kernel/common/...`（名字真叫 `...` 的目录，钉"点参数优先于现存目录"）；
+   zsh 那 4 条 global alias 的交互是 **zsh 专属**用例（片段里 `alias -g` 复现）；
 4. `ggco` 夹具：`$T/ggco/bare.git`（`git init --bare`）+ `$T/ggco/work`（clone），
    往裸仓推一条只有远端才有的 `feature` / `old`，然后在 clone 里跑 `ggco`
    （只推这个临时裸仓，不碰任何真 remote）；

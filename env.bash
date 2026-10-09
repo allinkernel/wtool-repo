@@ -329,15 +329,44 @@ _cdd_project_from_change () {
     printf '%s\n' "${line}" | cut -f5
 }
 
+# 内部：`..` / `...` / `....` 这种"整个 token 都是点"的参数 -> 往上跳的层数。
+# N 个点 = 往上 N-1 层（跟 zsh 里 `cd ...` 的规矩一样）。**不是点参数就返回 1**
+# （含别的字符 / 只有 1 个点 / 空），什么都不打印 —— 调用方照常往下走别的路。
+_cdd_dots_up () {
+    local token=$1
+    case ${token} in
+        *[!.]*) return 1 ;;
+    esac
+    [ ${#token} -ge 2 ] || return 1
+    printf '%s\n' "$(( ${#token} - 1 ))"
+}
+
 cdd () {
     if [ $# -ne 1 ]; then
         printf 'Usage: cdd TARGET\n' >&2
         printf '  TARGET 可以是：清单里的项目名（allinkernel/wtool.git 也行）、\n' >&2
         printf '                 相对 repo 根或当前目录的路径、现存的文件/目录、\n' >&2
         printf '                 或者 gerrit 提交编号（去 gerrit 查它属于哪个仓库）\n' >&2
+        printf '                 或者一串点（.. / ... / ....，往上跳"点数-1"层）\n' >&2
         return 2
     fi
     local target=$1
+    # 一串点（`..` = 上一层，`...` = 上两层，…… N 个点 = 往上 N-1 层）：
+    # 这是 zsh 里 `cd ...` 那个习惯（zsh 自己没有，是 oh-my-zsh 的 global alias
+    # 给的，只到 6 个点）。这里**不限点数**，bash 也照样能用，而且**不用站在
+    # repo 工作区里**（到不了 `/` 以下的任何清单逻辑）。放在最前面判 —— `..`
+    # 本身就是个真目录，不先判就会被下面"现存目录"那条抢走；顺带也压住
+    # "真有个叫 `...` 的目录"这种情形（点参数就是往上跳，不做路径解析）。
+    # 点太多、跳过根了？`cd` 自己会停在 `/`，不算错（退出码 0，不打东西）。
+    local dots_up up_path i
+    if dots_up=$(_cdd_dots_up "${target}"); then
+        up_path=..
+        for (( i = 1; i < dots_up; i++ )); do
+            up_path+=/..
+        done
+        cd "${up_path}" || return 1
+        return 0
+    fi
     if [ -e "$target" ]; then
         if [ -f "$target" ]; then
             cd "${target%/*}" 2>/dev/null || cd .
