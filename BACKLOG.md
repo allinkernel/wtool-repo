@@ -7,6 +7,57 @@
 
 ---
 
+## ✅ `ggcp` 大改 + `cdd <gerrit 编号>` —— 做完（2026-10-09，提交见 `git log ds_dev`）
+
+**做了什么**（用户逐条要求，接口写在 `README.md` §6，实现要点在 `architecture.md` §4.0）：
+
+1. **多编号**：`ggcp 1,2,3` 与 `ggcp 1 2 3` 等价，可以混用（`ggcp 1,2 3`）；
+2. **链接参数**：老式 `https://host/#/c/1234[/2]` 和新式 `https://host/c/proj/+/1234[/2]`
+   都自动取编号（带 `?`、结尾 `/` 都稳）；多链接/链接混编号也能拆；
+3. **Change-Id**：`ggcp I1111…` → 查 gerrit 上它的**所有提交**（一个 Change-Id 可能横跨
+   多个分支/多个 change，每个还有多个 patchset）→ 打一张表（编号/patchset/仓库/路径/提交链接）
+   → **逐个问**"给这个仓库打这个补丁吗？"（`-y` 全打、`-n` 全跳过）；
+   不论哪条入口，最后都**坍缩成 `_gr_apply_change <编号> <patchset>`**；
+4. **输出**：`git fetch` / `cherry-pick` 的原始输出一律吞掉（失败时才把关键错误打到 stderr），
+   正常路径只打 `正在下载N` / `正在打补丁N` / `打补丁成功`（绿）/ `打补丁失败`（红），
+   有几个编号就有几组；stdout 不是 tty 或设了 `NO_COLOR` 时自动退化成纯文本；
+5. **`cdd 1234`**：去 gerrit 查这个编号属于哪个项目（复用 `ggcp` 那套解析 +
+   `gerrit_query.py patchset` 的第 5 列），然后**坍缩成 `cdd <项目名>`**；
+   仓库不在工作区时打 `cdd: 1234 对应的仓库名 X 在当前 repo 工作区不存在` 并返回 1。
+   数字这条路**排在原有三条路之后**，`cdd` 原来的"现存文件/目录 / 项目名 / 相对路径"行为不变。
+6. **`ggco` 一个字都没改** —— 除了原有行为用例，测试里再加一条 `cksum` 冻结
+   （zsh `2879919872 2380`、bash `3925425235 2531`）。
+
+**为什么要挪窝**：`ggcp` 原来在 `tools/gerrit-gate` 里也有一份，而**实际生效的是
+gerrit-gate 那份**（wtool 按 priority 排：git-repo-sh-tools prio=40 → gerrit-gate prio=46，
+后 source 的赢）。用户决定废弃 gerrit-gate，于是把实现并到本仓库
+（`tools/git-repo-sh-tools/env.zsh` / `env.bash` 各一份），gerrit-gate 里那份**已删除**
+（它的 `gchk` / `gq` / `gpush` 还在，没动）。
+
+**验证到什么程度**：
+
+- `sh tests/run_tests.sh` → **303 通过 / 0 失败**（改前 173 条）；
+- 新增第 6 段夹具是"假 gerrit"（桩 `_gerrit_ssh` + 本地裸仓里的 `refs/changes/NN/N/P`），
+  **不连网、不发一条 ssh**；覆盖参数坍缩、颜色退化、端到端 cherry-pick、Change-Id 表格 +
+  逐个询问、`-y` / `-n`、红行失败路径、`cdd <编号>` 三种结局、`cdd` 老用法不被抢、
+  `ggco` 冻结；
+- 端到端演示（**真 gerrit-lab**，`wtool-lab` 容器）：`/tmp/ggcp-demo.txt`、`/tmp/cdd-demo.txt`
+  （`script -qec` 留的真终端记录，带 ANSI 颜色）；
+- `gb`/`gbb` 那类"会推真源"的命令**没碰**；lab 里只推过本地 gerrit-lab。
+
+**判据（可原地重跑）**：
+
+```sh
+cd ~/self/wtool/tools/git-repo-sh-tools && sh tests/run_tests.sh    # 303 通过, 0 失败
+sed -r 's/\x1b\[[0-9;]*m//g' /tmp/ggcp-demo.txt                  # 演示（去掉颜色码）
+sed -r 's/\x1b\[[0-9;]*m//g' /tmp/cdd-demo.txt
+```
+
+**没做/没验**：没在 `ubuntu:24.04` 裸容器里再装一遍（`container-raw.sh` 那套）；
+`ggcp -y` 在真实公司 gerrit 上没跑过（只有一个 Change-Id 横跨多分支的真实场景没造出来，
+lab 里那个 Change-Id 只有两个 patchset）；`cdd <编号>` 在 gerrit 连不上时的 10 秒超时
+（`ConnectTimeout=10`）没有专门测。
+
 ## ✅ `ggco`：fetch 之后直接 checkout —— 做完（2026-10-06，提交 `48dea0b`）
 
 **做了什么**：`env.zsh` / `env.bash` 各加一个 `ggco <分支|tag|commit>`，把远端某个 ref

@@ -30,7 +30,7 @@
 | 定位 | `cs` / `css` | 走到 / 打印含 `.repo` 的目录（repo 根） |
 | 定位 | `ct` / `ctt` | 走到 / 打印含 `.git` 的目录（单仓根） |
 | 定位 | `cm` / `cmm` | 走到 / 打印 `<repo 根>/.repo/manifests` |
-| 定位 | `cdd <目标>` | cd 到某个项目（可按项目名、路径、现存文件/目录） |
+| 定位 | `cdd <目标>` | cd 到某个项目（可按项目名、路径、现存文件/目录、**gerrit 提交编号**） |
 | 定位 | `cdd_path <目标>` | 同上但只打印绝对路径，不 cd（`ggcp` 内部用） |
 | 查询 | `cnp` / `cnn` | 当前项目在清单里的路径 / 名字（**都不带参数**） |
 | 查询 | `repo_mfst_get_*` | 7 个查询函数，见下（包 `my_repo.py`） |
@@ -39,7 +39,7 @@
 | git | `gpun [<深度>\|--depth=<深度>]` | 把 `gb` 打印的 `git pull <remote> <branch> --unshallow` **真的跑掉**（带深度就换成 `--depth=<深度>`） |
 | git | `gbb` | 按 `gb` 给出的命令**真的推**（公司 gerrit 环境可切成送检） |
 | git | `ggco <分支\|tag\|commit>` | 抓远端某个 ref 下来并**直接切过去**（fetch → checkout） |
-| gerrit | `ggcp <change> [patchset]` | 把 gerrit 上某个 patchset 抓回本地、cd 到对应项目、cherry-pick |
+| gerrit | `ggcp <编号\|链接\|Change-Id> ...` | 把 gerrit 上的提交抓回本地、cd 到对应项目、cherry-pick（支持多编号 / 链接 / 按 Change-Id 展开后逐个问） |
 | gerrit | `gchk <change>` | 这个 change 有没有 +2 / 有没有 merged（决定能不能推 main） |
 | gerrit | `gq [-r] <change>` | change 摘要（`-r`/`--raw` 出原始 JSON） |
 | gerrit | `gpush [remote]` | 把当前 HEAD 推到 `refs/for/<清单声明的分支>`（默认 remote `polygerrit`） |
@@ -68,16 +68,25 @@
 
 1. **目标当前就存在**：是文件 → `cd` 到它的父目录；是目录 → `cd` 进去；
 2. **清单里的项目名**（如 `allinkernel/wtool.git`）→ `cd` 到 `<repo 根>/<清单里的 path>`；
-3. **相对 repo 根的路径**（目录存在且在清单里有这个 path）→ `cd` 过去。
+3. **相对 repo 根的路径**（目录存在且在清单里有这个 path）→ `cd` 过去；
+4. **纯数字 = gerrit 提交编号**（就是 `ggcp` 用的那个）：去 gerrit 查这个编号属于哪个项目
+   （走 `ggcp` 同一套服务器解析 + `${WTOOL_GERRIT_TOOL} patchset`），拿到项目名后
+   **坍缩成 `cdd <项目名>`** —— 也就是走上面第 2 条。例：`cdd 1234`。
 
 找不到时的报错（都是 stderr）：
 
 | 情况 | 报错 | 返回码 |
 |---|---|---|
-| 参数个数 ≠ 1 | `Usage: cdd TARGET` + 三行说明 | 2 |
+| 参数个数 ≠ 1 | `Usage: cdd TARGET` + 四行说明 | 2 |
 | 一路往上找不到 `.repo` | `cdd: 当前目录不在 repo 工作区里（一路往上都找不到 .repo）` + `想按名字跳转得先站在 repo 工作区里` | 1 |
 | 清单里有这个项目、但目录还不存在 | `cdd: 项目 'X' 已在清单里，但目录还不存在：` + 绝对路径 + `先 repo sync X` | 1 |
 | 名字和路径都对不上 | `cdd: 清单里没有 'X' 这个项目名或路径` + `看看都有什么：<my_repo.py> list --root <root>` | 1 |
+| 编号对应的仓库不在工作区 | `cdd: N 对应的仓库名 X 在当前 repo 工作区不存在`（清单里也没这个项目时再多一行 `（本地清单里也没有 X 这个项目）`） | 1 |
+| 知道不了 gerrit 在哪 | `cdd: 按提交编号跳转得先知道 gerrit 服务器在哪：` + 两条途径 | 1 |
+| gerrit 连不上 / 查不到这个编号 | `cdd: 连 <user>@<host>:<port> 查询 change N 失败` / `cdd: gerrit 上查不到 change N（编号对不对？有没有权限？）` | 1 |
+
+> 数字这条路是**加在第 1~3 条之后**的：现存目录/文件、清单项目名、相对路径都优先，
+> 所以原来的两种用法行为不变（`cdd 12345` 在真有个叫 `12345` 的目录时，还是进那个目录）。
 
 `cdd_path` 是 `cdd` 的"不跳转版"：只打印绝对路径，供 `ggcp` 之类的脚本用。
 
@@ -269,29 +278,75 @@ sshkey=~/.ssh/id_rsa
 默认值：`port` 没给就是 `29418`，`user` 没给就是 `$USER`。都找不到时 `ggcp` 会打印
 `ggcp: 不知道 gerrit 服务器在哪。请任选一种方式告诉它：` 加三条途径，返回 1。
 
-#### `ggcp <change> [patchset]`
+#### `ggcp <编号|链接|Change-Id> ...`
+
+**所有入口最后都坍缩成"按 gerrit 编号打补丁"这一件事**（内部函数 `_gr_apply_change`）。
 
 ```sh
-ggcp 1234                                   # 当前（最新）patchset
-ggcp 1234 1                                 # 第 1 个 patchset
-ggcp 1234/2                                 # 同上（/ 或 , 都认）
-ggcp https://gerrit.company.com/c/proj/+/1234/2
-ggcp https://gerrit.company.com/#/c/1234/2  # 老式链接也认
+ggcp 1234                                   # 一个编号（当前 patchset）
+ggcp 1,2,3                                  # 英文逗号分隔的编号列表
+ggcp 1 2 3                                  # 空格分隔的编号列表（和上面等价）
+ggcp 1,2 3                                  # 两种可以混用
+ggcp https://gerrit.company.com/c/proj/+/1234     # 链接里自动取编号
+ggcp https://gerrit.company.com/#/c/1234/2        # 老式链接也认
+ggcp 1234/2                                 # 指定第 2 个 patchset
+ggcp -p 2 1234 5678                         # -p 给这一批都指定 patchset
+ggcp I1111111111111111111111111111111111111111    # 按 Change-Id（见下）
+ggcp -y I1111…                              # 全打，不再问
+ggcp -n I1111…                              # 全跳过，只打表
 ```
+
+| 选项 | 作用 |
+|---|---|
+| `-p <n>` / `--patchset <n>` / `--patchset=<n>` | 这一批都用第 n 个 patchset（默认：各自当前的 patchset；也可以写成 `1234/2`） |
+| `-y` / `--yes` | 不再逐个问，全都打（只影响 Change-Id 那条路） |
+| `-n` / `--no` | 不再逐个问，全都跳过 |
+| `-h` / `--help` | 打用法 |
+
+**按 Change-Id 打**（`I` + 40 位十六进制）时，它先去 gerrit 查这个 Change-Id 的**所有提交**
+（同一个 Change-Id 可能横跨多个分支 / 多个 change，每个还有多个 patchset），打一张表，
+再**挨个问**"给这个仓库打这个补丁吗？"：
+
+```
+编号  patchset  仓库                      路径             提交链接
+----  --------  ------------------------  ---------------  ------------------------------------------------------
+1     1         platform/libnativehelper  libnativehelper  http://127.0.0.1:8080/c/platform/libnativehelper/+/1/1
+1     2         platform/libnativehelper  libnativehelper  http://127.0.0.1:8080/c/platform/libnativehelper/+/1/2
+给仓库 platform/libnativehelper 打补丁 1 (patchset 1) 吗？[y/N/q]
+```
+
+- 答 `y` 就打，回车/`n` 跳过，`q` = 不再问了（剩下的都跳过）；
+- **stdin 不是 tty**（比如 `printf 'y\nn\n' | ggcp …`）时读不到就按"跳过"处理，不会挂住；
+- 表里的"路径"是本地的工作区相对路径，找不到时写 `（目录不存在）` / `（不在本地清单里）`。
 
 它做的事（每一步都能在 `env.zsh` 里找到）：
 
-1. 拆参数（编号 + patchset；`patchset` 必须是数字，否则返回 2）；
-2. 解析 gerrit 服务器（上面那套）；
-3. `ssh <user>@<host> -p <port> gerrit query --format=JSON --patch-sets --current-patch-set "change:<n>"`；
-4. 用 `gerrit_query.py patchset <n> [ps]` 选出 patchset（不指定就取 current），
+0. `_gr_collect_args` 把参数**坍缩成 `编号|patchset` 列表**（逗号 / 空格 / 链接 / `1234/2`），
+   Change-Id 单独收集，稍后用 `_gr_expand_changeids` 展开成同样的列表；
+1. 解析 gerrit 服务器（上面那套）；
+2. `ssh <user>@<host> -p <port> gerrit query --format=JSON --patch-sets --current-patch-set "change:<n>"`
+   （**ssh 的 stdin 被挡成 `/dev/null`** —— 不然它会把用户要敲的答案吞掉）；
+3. 用 `gerrit_query.py patchset <n> [ps]` 选出 patchset（不指定就取 current），
    拿到 `revision` 和 `ref`；
-5. `cdd_path <项目名>` 找到本地目录（找不到/目录不存在会告诉你 `先 repo sync <项目>`）；
-6. 选 remote：有 `polygerrit` 就用它，否则用清单声明的，再否则用第一个；
-7. `git fetch <remote> <ref>`（走同一把 ssh key）；
-8. **核对**：`git rev-parse FETCH_HEAD` 必须等于 gerrit 报的 `revision`，不等就**不 cherry-pick**
-   （报错并让你用 `gq <n>` 看 patchset 列表）；
-9. `git cherry-pick <revision>`；冲突时提示 `git cherry-pick --continue` / `--abort`。
+4. `cdd_path <项目名>` 找到本地目录（找不到/目录不存在会告诉你 `先 repo sync <项目>`）；
+5. 选 remote：有 `polygerrit` 就用它，否则用清单声明的，再否则用第一个；
+6. `git fetch <remote> <ref>`（走同一把 ssh key），**输出吞掉**；
+7. **核对**：`git rev-parse FETCH_HEAD` 必须等于 gerrit 报的 `revision`，不等就**不 cherry-pick**；
+8. `git cherry-pick <revision>`，**输出吞掉**；冲突时提示 `git cherry-pick --continue` / `--skip` / `--abort`。
+
+**正常路径只打这四行**（`git fetch` / `cherry-pick` 的原始输出一律不给用户看，
+只有失败时才把关键错误打到 stderr）：
+
+```
+正在下载N          # N = gerrit 编号
+正在打补丁N
+打补丁成功          # 绿色
+打补丁失败          # 红色
+```
+
+有几个编号就有几组这样的行。颜色在 **stdout 不是 tty**、或者设了 **`NO_COLOR`** 时
+自动退化成纯文本（测试才逐字节可比）；`WTOOL_GGCP_COLOR=always|never` 可以强制。
+一个编号失败不影响后面的编号继续打，但**整体退出码是 1**。
 
 #### `gchk <change>` —— 能不能推 main
 
@@ -404,6 +459,7 @@ wninja -C out build_image
 | `WTOOL_GERRIT_USER` | 你 | ssh 用户名，默认 `$USER` |
 | `WTOOL_GERRIT_SSH_KEY` | 你 | ssh 私钥，给了就 `-i <key> -o IdentitiesOnly=yes` |
 | `WTOOL_GERRIT_CONF` | 你 | 额外的 gerrit 配置文件路径（优先于另外两个默认位置） |
+| `WTOOL_GGCP_COLOR` | 你（可选） | `always` / `never` 强制 `ggcp` 的绿/红输出；不给就看 stdout 是不是 tty（不是就退化成纯文本），`NO_COLOR` 也能关 |
 
 gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf`、`~/.wtool/gerrit.conf`；
 键名 `host` / `port` / `user` / `sshkey`。`gb` / `gbb` 读的是**清单**里声明的 branch/remote
@@ -426,12 +482,17 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 | `cdd: 当前目录不在 repo 工作区里（一路往上都找不到 .repo）` | 按名字跳转必须先站在工作区里 |
 | `cdd: 项目 'X' 已在清单里，但目录还不存在：` | 先 `repo sync X` |
 | `cdd: 清单里没有 'X' 这个项目名或路径` | 名字/路径拼错；按提示跑 `my_repo.py list --root <root>` |
+| `cdd: N 对应的仓库名 X 在当前 repo 工作区不存在` | 这个 gerrit 编号对应的项目还没 sync 下来（或用的是另一份清单）：`repo sync X` |
+| `cdd: 按提交编号跳转得先知道 gerrit 服务器在哪：` | 按提示设 `WTOOL_GERRIT_HOST`，或写 `<repo 根>/.gerrit/client.conf` |
+| `cdd: gerrit 上查不到 change N（编号对不对？有没有权限？）` | 编号错、或这个编号不在这台 gerrit 上 |
 | `ggcp: 不知道 gerrit 服务器在哪。请任选一种方式告诉它：` | 按提示设 `WTOOL_GERRIT_HOST` / 写 `~/.wtool/gerrit.conf` / 放 `<repo 根>/.gerrit/client.conf` |
 | `ggcp: 连 <user>@<host>:<port> 查询失败` | ssh 不通或公钥没在 gerrit 登记；先手敲一次 `ssh -p <port> <user>@<host> gerrit version` |
-| `ggcp: change N 查不到（编号对不对？有没有权限？）` | 编号错或没权限 |
-| `ggcp: 抓到的 commit（X）和 gerrit 说的（Y）对不上，这次不 cherry-pick。用 gq N 看看 patchset 列表` | patchset/ref 选错了（或 change 刚被更新）；`gq` 确认后再来 |
-| `ggcp: cherry-pick 冲突了。…` | 按提示 `git cherry-pick --continue` 或 `--abort` |
-| `ggcp: cherry-pick 没跑起来（工作区有没提交的改动？先 commit 或 git stash）` | 工作区脏 |
+| `打补丁失败`（红）+ `ggcp: change N 查不到（编号对不对？有没有权限？）` | 编号错或没权限 |
+| `ggcp: change N 抓到的 commit（X）和 gerrit 说的（Y）对不上，这次不 cherry-pick` | patchset/ref 选错了（或 change 刚被更新）；`gq` 确认后再来 |
+| `打补丁失败`（红）+ `ggcp: cherry-pick 没走完（冲突，或者这个补丁已经打过了、变成空提交）：` | 按提示 `git cherry-pick --continue` / `--skip` / `--abort` 收尾 |
+| `打补丁失败`（红）+ `ggcp: git fetch <remote> <ref> 失败：` | 网络/权限/ref 没了；下面几行是 `git fetch` 的原始报错 |
+| `ggcp: N 不是提交编号、gerrit 链接或 Change-Id`（返回 2） | 参数不对；`ggcp -h` 看用法 |
+| `ggcp: Change-Id 'I…' 不能指定 patchset（它对应很多个提交）`（返回 2） | 要指定 patchset 就用编号：`ggcp 1234/2` |
 | `ggco: 工作树有本地改动，先 git stash 或 git commit（本命令不覆盖本地改动）：` | 先把已跟踪文件的改动 stash / commit 掉；未跟踪文件不影响它 |
 | `ggco: 远端没有这个 ref（或取不到）：<remote> <ref>` | ref 名拼错、或 fetch 本身失败（网络/权限）。按提示 `git ls-remote --heads --tags <remote>` 看远端有什么 |
 | `ggco: 本地分支 X 停在 A，不是刚 fetch 的 B` | 本地同名分支和远端不一致；本命令**不会**替你 reset。按提示 `git merge --ff-only FETCH_HEAD`，或自己决定怎么处理 |
@@ -450,15 +511,16 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 ## 测试
 
 ```sh
-sh tests/run_tests.sh      # 173 条（五段合计，以脚本最后打印的通过/失败数为准）
+sh tests/run_tests.sh      # 303 条（六段合计，以脚本最后打印的通过/失败数为准）
 ```
 
-测试分五段（都在临时目录里造"公司环境"的假工作区 / 假裸仓，不碰真工作区）：
+测试分六段（都在临时目录里造"公司环境"的假工作区 / 假裸仓 / 假 gerrit，不碰真工作区、不连网）：
 
 1. **`my_repo.py`**（基本查询、分支/remote 解析、`local_manifests` 的增删、`list`、错误处理、
    "没有 `.repo/repo` 也能跑"）；
-2. **`gerrit_query.py`**（patchset 选择、`check` 的退出码、`list` / `raw` / 坏输入）；
-3. **`env.zsh` / `env.bash` 对比**（`cnp` / `cdd` 的用法报错、`ggcp` 的参数解析、
+2. **`gerrit_query.py`**（patchset 选择、`check` 的退出码、`list` / `raw` / 坏输入、
+   `commits` 展开与 `table` 打表）；
+3. **`env.zsh` / `env.bash` 对比**（`cnp` / `cdd` 的用法报错、`ggcp` 的参数坍缩、颜色退化、
    `ggco` 端到端、`gpun` 端到端 —— 不连网），**同一张用例表跑两个 shell**，
    用来钉住"两份等价"；
 4. **`ggco` 的裸仓夹具**（本地 `git init --bare` + clone，`git push` 只推到那个临时裸仓）：
@@ -471,6 +533,23 @@ sh tests/run_tests.sh      # 173 条（五段合计，以脚本最后打印的�
    commit 都没多**、`gb` 自己失败时返回 1、完整仓上由 git 报错并按 git 的退出码返回、
    桩 `gb` 给两条时只跑第一条、五种用法错误返回 2 —— 每一条的退出码、回显的命令、
    报错文字都断言。
+6. **`ggcp` / `cdd <编号>` 的"假 gerrit"夹具**：`_gerrit_ssh` 用桩（`cat` 一个 JSON 文件，
+   **一条 ssh 都不发、一个网都不连**），"gerrit 服务器"就是本地裸仓里那几条
+   `refs/changes/01/1/1`、`…/1/2`、`…/02/2/1`，项目目录是个真 git 仓
+   （remote 叫 `polygerrit`，指向那个裸仓）。钉的是：
+   - **参数坍缩**：`1,2,3` / `1 2 3` / `1,2 3` 等价、`1234/2`、两种链接、
+     `<链接>` 带 `?` 后缀、Change-Id 单独收集、乱参数返回 2；
+   - **颜色退化**：非 tty 时输出里不允许有 ANSI 码；`WTOOL_GGCP_COLOR=always` 能强制出绿/红；
+   - **端到端**：`ggcp 1` 的输出**逐字节**等于三行（`正在下载1` / `正在打补丁1` / `打补丁成功`）
+     且 HEAD 上真多了那个提交；`ggcp 1 2` 六行、两个都进来；同一个补丁打第二遍是
+     `打补丁失败`（红）+ 退出码 1；Change-Id 会打表（编号/patchset/仓库/路径/提交链接）、
+     逐个问两次、答 y 的打上、答 n 的不打；`-n` 一个都不打、`-y` 两个都打；
+   - **`cdd <编号>`**：9001（仓库在工作区里）跳到那个目录、9002（清单里有、目录没有）打
+     `cdd: 9002 对应的仓库名 gone/project 在当前 repo 工作区不存在` 且退出码 1、
+     9003（清单里没这个项目）同理；同时回归 `cdd` 原来的三条路（现存目录/项目名/现存文件）
+     优先级不被抢；
+   - **`ggco` 冻结**：`ggco` 的函数体 `cksum` 逐字节比对（zsh `2879919872 2380`、
+     bash `3925425235 2531`）—— 用户明确要求"ggco 一个字都不许变"。
 
 夹具故意造成"公司环境"的样子：**没有 `.repo/repo`**、清单里有 `<include>`、
 `local_manifests` 里 `remove-project` / 覆盖 revision。
@@ -521,7 +600,8 @@ sh tests/run_tests.sh      # 173 条（五段合计，以脚本最后打印的�
 | `wtool.xml` | 清单：1 个 `<zshrc>` + 1 个 `<bashrc>`（无 link） |
 | `env.zsh` / `env.bash` | 全部命令 + 内联 `_up_to_have_dir` + 两个工具路径（zsh / bash 两份，等价） |
 | `my_repo.py` | manifest 查询工具（自包含解析，见上） |
-| `gerrit_query.py` | 解析 `gerrit query --format=JSON` 的输出（供 `ggcp` / `gchk` / `gq` 用） |
+| `gerrit_query.py` | 解析 `gerrit query --format=JSON` 的输出（供 `ggcp` / `gchk` / `gq` 用）；
+动作：`patchset` / `commits`（一个 Change-Id 的每个 patchset 一行 TSV）/ `table`（把那些行打成对齐的表，`--path-map` 给"项目名→本地路径"）/ `check` / `list` / `raw` |
 | `tests/run_tests.sh` | 上面两个 python 工具的测试 + `env.zsh`/`env.bash` 的行为对比（含 `ggco` / `gpun` 的裸仓端到端） |
 | `architecture.md` | 代码现在长什么样（现状，只写现状） |
 | `BACKLOG.md` | 这个项目"接下来做什么、做到哪了" |

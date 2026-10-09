@@ -332,12 +332,40 @@ _repo_project_relpath () {
     return 1
 }
 
+# 内部：gerrit 上的提交编号 -> 它属于哪个项目（gerrit project 名）。
+# 复用 ggcp 那套服务器解析（环境变量 / client.conf / ~/.wtool/gerrit.conf / 猜 remote）
+# 和 gerrit_query.py 的 patchset 动作（第 5 列就是 project）。
+_cdd_project_from_change () {
+    local number=$1 line
+    if ! _gerrit_resolve >/dev/null 2>&1; then
+        echo "cdd: 按提交编号跳转得先知道 gerrit 服务器在哪：" >&2
+        echo "     export WTOOL_GERRIT_HOST=user@host:29418" >&2
+        echo "     或写 <repo 根>/.gerrit/client.conf（host=/port=/user=/sshkey=）" >&2
+        return 1
+    fi
+    if ! _gerrit_query_capture ${number}; then
+        echo "cdd: 连 ${_GERRIT_USER}@${_GERRIT_HOST}:${_GERRIT_PORT} 查询 change ${number} 失败" >&2
+        return 1
+    fi
+    if [[ -z ${_GERRIT_JSON//[[:space:]]/} ]]; then
+        echo "cdd: gerrit 上查不到 change ${number}（编号对不对？有没有权限？）" >&2
+        return 1
+    fi
+    if ! line=$(print -r -- ${_GERRIT_JSON} | python3 ${WTOOL_GERRIT_TOOL} patchset ${number} 2>&1); then
+        echo "cdd: gerrit 上查不到 change ${number}（编号对不对？有没有权限？）" >&2
+        print -r -- ${line} >&2
+        return 1
+    fi
+    print -r -- ${line} | cut -f5
+}
+
 # only used by zsh
 cdd () {
     if [[ $# -ne 1 ]]; then
         echo "Usage: cdd TARGET" >&2
         echo "  TARGET 可以是：清单里的项目名（allinkernel/wtool.git 也行）、" >&2
-        echo "                 相对 repo 根或当前目录的路径、现存的文件/目录" >&2
+        echo "                 相对 repo 根或当前目录的路径、现存的文件/目录、" >&2
+        echo "                 或者 gerrit 提交编号（去 gerrit 查它属于哪个仓库）" >&2
         return 2
     fi
     local target=$1
@@ -365,6 +393,23 @@ cdd () {
         echo "cdd: 项目 '${repo_rel}' 已在清单里，但目录还不存在：" >&2
         echo "     ${repo_abs}" >&2
         echo "     先 repo sync ${repo_rel}" >&2
+        return 1
+    fi
+    # 纯数字 = gerrit 提交编号（ggcp 用的那个）：去 gerrit 查它属于哪个仓库，
+    # 然后**坍缩成 `cdd <仓库名>`** —— 走的还是上面那条路。
+    if [[ ${target} == <-> ]]; then
+        local proj
+        proj=$(_cdd_project_from_change ${target}) || return 1
+        if [[ -z ${proj} ]]; then
+            echo "cdd: change ${target} 查不到它属于哪个项目" >&2
+            return 1
+        fi
+        if repo_rel=$(_repo_project_relpath ${proj}) && [[ -d ${css_dir}/${repo_rel} ]]; then
+            cdd ${proj}
+            return $?
+        fi
+        echo "cdd: ${target} 对应的仓库名 ${proj} 在当前 repo 工作区不存在" >&2
+        [[ -z ${repo_rel} ]] && echo "     （本地清单里也没有 ${proj} 这个项目）" >&2
         return 1
     fi
     echo "cdd: 清单里没有 '${target}' 这个项目名或路径" >&2
@@ -656,9 +701,15 @@ _gerrit_project_remote () {
 }
 
 # 内部：把 <change> 或 URL 拆成 "编号 [patchset]"
+#   认：1234 / 1234/2 / 两种 gerrit 链接 / I<40 位十六进制>（Change-Id）
+#   Change-Id 不是编号：这时 _GERRIT_CHANGEID 非空、_GERRIT_CHANGE 也等于它
+#   （`change:<Change-Id>` 在 gerrit query 里是合法的），调用方看到
+#   _GERRIT_CHANGEID 非空就知道"这是 Change-Id，要展开成多个提交"。
 _gerrit_parse_change_arg () {
     local raw=$1 ps=$2 orig=$1
-    typeset -g _GERRIT_CHANGE _GERRIT_PS
+    typeset -g _GERRIT_CHANGE _GERRIT_PS _GERRIT_CHANGEID
+    _GERRIT_CHANGEID=
+    local re_cid='^I[0-9a-fA-F]{40}$'
     if [[ ${raw} == http*://* ]]; then
         raw=${raw%%\?*}
         # 老式链接把 change 号放在 # 后面：https://host/#/c/1234/2
@@ -675,16 +726,29 @@ _gerrit_parse_change_arg () {
         elif [[ ${raw} =~ '/([0-9]+)$' ]]; then
             _GERRIT_CHANGE=${match[1]}
         fi
+    elif [[ ${raw} =~ ${re_cid} ]]; then
+        _GERRIT_CHANGE=${raw}
+        _GERRIT_CHANGEID=${raw}
     else
         _GERRIT_CHANGE=${raw%%[/,]*}
         if [[ -z ${ps} && ${raw} == *[/,]* ]]; then
             ps=${raw#*[/,]}
         fi
     fi
+    if [[ -n ${_GERRIT_CHANGEID} ]]; then
+        if [[ -n ${ps} ]]; then
+            echo "ggcp: Change-Id '${orig}' 不能指定 patchset（它对应很多个提交）" >&2
+            echo "      要看清单个 patchset 请用编号，例如 ggcp 1234/2" >&2
+            return 2
+        fi
+        _GERRIT_PS=
+        return 0
+    fi
     if [[ ! ${_GERRIT_CHANGE} == <-> ]]; then
         echo "ggcp: '${orig}' 里看不出 change 编号。" >&2
         echo "      用法: ggcp <change> [patchset]，例如 ggcp 1234 / ggcp 1234 2" >&2
-        echo "           也认 https://gerrit.company.com/c/proj/+/1234/2 这种链接" >&2
+        echo "           也认 https://gerrit.company.com/c/proj/+/1234/2 和老式 #/c/1234/2" >&2
+        echo "           还可以给 Change-Id：ggcp I1111111111111111111111111111111111111111" >&2
         return 2
     fi
     if [[ -n ${ps} && ! ${ps} == <-> ]]; then
@@ -696,9 +760,11 @@ _gerrit_parse_change_arg () {
 }
 
 # 内部：抓一个 change 的 JSON（stdout）
+# `</dev/null` 是必须的：ssh 会把 stdin 吞掉（转发给远端命令），而 ggcp 按
+# Change-Id 打补丁时要**用 stdin 逐个问用户** —— 不挡的话问题刚打完就问不到答案了。
 _gerrit_query_change () {
     local change=$1
-    _gerrit_ssh gerrit query --format=JSON --patch-sets --current-patch-set "change:${change}"
+    _gerrit_ssh gerrit query --format=JSON --patch-sets --current-patch-set "change:${change}" < /dev/null
 }
 
 # 内部：抓 JSON 到 $_GERRIT_JSON。
@@ -715,29 +781,127 @@ _gerrit_query_capture () {
     return ${rc}
 }
 
-# ggcp <change> [patchset]
-#   把 gerrit 上第 <change> 号提交的第 <patchset> 个版本抓回本地，
-#   cd 到它在清单里对应的项目目录，fetch 之后 cherry-pick。
-#   不给 patchset 就用当前（最新）那个。
-ggcp () {
-    if [[ $# -lt 1 ]]; then
-        echo "Usage: ggcp <change> [patchset]" >&2
-        echo "  ggcp 1234        # 当前 patchset" >&2
-        echo "  ggcp 1234 1      # 第 1 个 patchset" >&2
-        echo "  ggcp https://gerrit.company.com/c/proj/+/1234/2" >&2
-        return 2
-    fi
-    _gerrit_parse_change_arg "$1" "$2" || return $?
-    local change=${_GERRIT_CHANGE} wanted=${_GERRIT_PS}
-    _gerrit_resolve || return 1
+# ---------------------------------------------------------------------------
+# ggcp —— 把 gerrit 上的提交抓回本地并 cherry-pick
+#
+# 所有入口最后都**坍缩成"按 gerrit 编号打补丁"这一件事**（_gr_apply_change）：
+#   编号          ggcp 1234
+#   编号列表      ggcp 1,2,3（英文逗号）/ ggcp 1 2 3（空格）/ 混用 ggcp 1,2 3
+#   gerrit 链接   ggcp https://host/#/c/1234  或  https://host/c/proj/+/1234
+#   Change-Id     ggcp I1111…（去 gerrit 查它的**所有**提交，打表后逐个问）
+# 正常路径只打四行：正在下载N / 正在打补丁N / 打补丁成功（绿）/ 打补丁失败（红）；
+# git fetch、cherry-pick 的原始输出一律吞掉，只有失败时才把关键错误打到 stderr。
+# ---------------------------------------------------------------------------
 
-    local json line
+# 颜色：stdout 不是 tty（或设了 NO_COLOR）时自动退化成纯文本 —— 测试才逐字节可比。
+#   WTOOL_GGCP_COLOR=always|never 可以强制（测试用）。
+_gr_color_on () {
+    case ${WTOOL_GGCP_COLOR:-} in
+        always) return 0 ;;
+        never)  return 1 ;;
+    esac
+    [[ -n ${NO_COLOR:-} ]] && return 1
+    [[ -t 1 ]]
+}
+
+_gr_green () {
+    if _gr_color_on; then
+        print -r -- $'\033[32m'"$1"$'\033[0m'
+    else
+        print -r -- "$1"
+    fi
+}
+
+_gr_red () {
+    if _gr_color_on; then
+        print -r -- $'\033[31m'"$1"$'\033[0m'
+    else
+        print -r -- "$1"
+    fi
+}
+
+_gr_ggcp_usage () {
+    echo "Usage: ggcp [-y|-n] [-p <patchset>] <编号|链接|Change-Id> ..." >&2
+    echo "  ggcp 1234               # 一个编号（当前 patchset）" >&2
+    echo "  ggcp 1,2,3              # 英文逗号分隔的编号列表" >&2
+    echo "  ggcp 1 2 3              # 空格分隔的编号列表（两种可以混用）" >&2
+    echo "  ggcp https://gerrit.company.com/#/c/1234     # 直接从链接里取编号" >&2
+    echo "  ggcp https://gerrit.company.com/c/proj/+/1234" >&2
+    echo "  ggcp I1111111111111111111111111111111111111111" >&2
+    echo "       # 按 Change-Id：查 gerrit 上它的所有提交，打表后逐个问" >&2
+    echo "  -p <n>   打第 n 个 patchset（默认当前 patchset；也可以写成 1234/2）" >&2
+    echo "  -y       全都打，不再问（Change-Id 那条路默认逐个问）" >&2
+    echo "  -n       全都跳过，不问" >&2
+}
+
+# 把 ggcp 的参数**坍缩成"按编号打补丁"这一件事**：
+#   数字 / 逗号列表 / 空格列表 / 链接 / 1234/2  -> _GGCP_ITEMS（"编号|patchset"）
+#   Change-Id                                   -> _GGCP_IDS（稍后去 gerrit 展开）
+_gr_collect_args () {
+    typeset -ga _GGCP_ITEMS _GGCP_IDS
+    _GGCP_ITEMS=()
+    _GGCP_IDS=()
+    local a tok re_cid='^I[0-9a-fA-F]{40}$'
+    for a in "$@"; do
+        # 逗号列表：1,2,3 -> 三个 token（空格列表由调用方的 $@ 天然拆开）
+        for tok in ${(s:,:)a}; do
+            [[ -z ${tok} ]] && continue
+            if [[ ${tok} =~ ${re_cid} ]]; then
+                _GGCP_IDS+=(${tok})
+                continue
+            fi
+            if [[ ${tok} == http*://* ]]; then
+                _gerrit_parse_change_arg ${tok} || return 2
+                _GGCP_ITEMS+=("${_GERRIT_CHANGE}|${_GERRIT_PS}")
+                continue
+            fi
+            if [[ ${tok} == <->/<-> ]]; then
+                _GGCP_ITEMS+=("${tok%%/*}|${tok#*/}")
+                continue
+            fi
+            if [[ ${tok} == <-> ]]; then
+                _GGCP_ITEMS+=("${tok}|")
+                continue
+            fi
+            echo "ggcp: '${tok}' 不是提交编号、gerrit 链接或 Change-Id" >&2
+            _gr_ggcp_usage
+            return 2
+        done
+    done
+    return 0
+}
+
+# 问一句：返回 0 = 打，1 = 跳过，2 = 不再问了（剩下的都跳过）
+_gr_ask () {
+    local prompt=$1 ans
+    printf '%s' "${prompt}"
+    if ! IFS= read -r ans; then
+        print -r -- ""
+        return 1
+    fi
+    # 答案是从管道/文件喂进来的时候（`printf 'y\n' | ggcp …`），终端不会回显那一下回车，
+    # 这里自己补一个换行 —— 不然问题和后面的输出会粘成一行，日志没法看
+    [[ -t 0 ]] || print -r -- ""
+    case ${ans} in
+        [yY]|[yY][eE][sS]) return 0 ;;
+        [qQ])              return 2 ;;
+        *)                 return 1 ;;
+    esac
+}
+
+# 打**一个**补丁（编号 + 可选 patchset）—— ggcp 的所有入口最后都坍缩到这里。
+# 正常路径只打四行：正在下载N / 正在打补丁N / 打补丁成功 / 打补丁失败。
+_gr_apply_change () {
+    local change=$1 wanted=$2
+    local json line number pset revision ref project branch url subject
     if ! _gerrit_query_capture ${change}; then
-        echo "ggcp: 连 ${_GERRIT_USER}@${_GERRIT_HOST}:${_GERRIT_PORT} 查询失败" >&2
+        _gr_red 打补丁失败
+        echo "ggcp: 连 ${_GERRIT_USER}@${_GERRIT_HOST}:${_GERRIT_PORT} 查询 change ${change} 失败" >&2
         return 1
     fi
     json=${_GERRIT_JSON}
     if [[ -z ${json//[[:space:]]/} ]]; then
+        _gr_red 打补丁失败
         echo "ggcp: change ${change} 查不到（编号对不对？有没有权限？）" >&2
         return 1
     fi
@@ -746,57 +910,196 @@ ggcp () {
     args=(patchset ${change})
     [[ -n ${wanted} ]] && args+=(${wanted})
     if ! line=$(print -r -- ${json} | python3 ${WTOOL_GERRIT_TOOL} ${args} 2>&1); then
+        _gr_red 打补丁失败
         print -r -- ${line} >&2
         return 1
     fi
-
-    local number pset revision ref project branch url subject
     IFS=$'\t' read -r number pset revision ref project branch url subject <<< ${line}
     [[ -z ${ref} ]] && ref=${revision}
 
     local dir
     if ! dir=$(cdd_path ${project}); then
+        _gr_red 打补丁失败
         echo "ggcp: change ${change} 属于项目 '${project}'，但清单里找不到它" >&2
         echo "      （本地清单和 gerrit 上的是同一份吗？）" >&2
         return 1
     fi
     if [[ ! -d ${dir} ]]; then
-        echo "ggcp: 项目 '${project}' 的目录还不存在：${dir}" >&2
-        echo "      先 repo sync ${project}" >&2
+        _gr_red 打补丁失败
+        echo "ggcp: 项目 '${project}' 的目录还不存在：${dir}（先 repo sync ${project}）" >&2
         return 1
     fi
 
-    cd ${dir} || return 1
+    cd ${dir} || { _gr_red 打补丁失败; return 1 }
     local remote
     if ! remote=$(_gerrit_project_remote); then
+        _gr_red 打补丁失败
         echo "ggcp: 在 $(pwd) 里找不到可用的 git remote" >&2
         return 1
     fi
 
-    echo "ggcp: change ${number} patchset ${pset} -> ${project} (${branch})"
-    echo "      commit ${revision}"
-    echo "      URL    ${url}"
-    GIT_SSH_COMMAND=$(_gerrit_git_ssh_command) git fetch ${remote} ${ref} || return 1
-    # fetch 回来核对一下：ref 里写的 patchset 和 gerrit 报的 commit 必须是同一个，
-    # 不然就是我把 ref 拼错了，这时候宁可不 cherry-pick
-    local fetched
-    fetched=$(git rev-parse FETCH_HEAD 2>/dev/null)
-    if [[ ${fetched} != ${revision} ]]; then
-        echo "ggcp: 抓到的 commit（${fetched}）和 gerrit 说的（${revision}）对不上，" >&2
-        echo "      这次不 cherry-pick。用 gq ${number} 看看 patchset 列表" >&2
+    local out rc fetched
+    print -r -- "正在下载${number}"
+    out=$(GIT_SSH_COMMAND=$(_gerrit_git_ssh_command) git fetch ${remote} ${ref} 2>&1)
+    rc=$?
+    if (( rc != 0 )); then
+        _gr_red 打补丁失败
+        echo "ggcp: git fetch ${remote} ${ref} 失败：" >&2
+        print -r -- "${out}" >&2
         return 1
     fi
-    if ! GIT_SSH_COMMAND=$(_gerrit_git_ssh_command) git cherry-pick ${revision}; then
+    # fetch 回来核对一下：ref 里写的 patchset 和 gerrit 报的 commit 必须是同一个，
+    # 不然就是我把 ref 拼错了，这时候宁可不 cherry-pick
+    fetched=$(git rev-parse FETCH_HEAD 2>/dev/null)
+    if [[ ${fetched} != ${revision} ]]; then
+        _gr_red 打补丁失败
+        echo "ggcp: change ${number} 抓到的 commit（${fetched}）和 gerrit 说的（${revision}）对不上，这次不 cherry-pick" >&2
+        return 1
+    fi
+
+    print -r -- "正在打补丁${number}"
+    out=$(GIT_SSH_COMMAND=$(_gerrit_git_ssh_command) git cherry-pick ${revision} 2>&1)
+    rc=$?
+    if (( rc != 0 )); then
+        _gr_red 打补丁失败
+        print -r -- "${out}" >&2
         if [[ -f $(git rev-parse --git-path CHERRY_PICK_HEAD 2>/dev/null) ]]; then
-            echo "ggcp: cherry-pick 冲突了。解决后 git cherry-pick --continue，" >&2
-            echo "      或者 git cherry-pick --abort 整个放弃" >&2
-        else
-            echo "ggcp: cherry-pick 没跑起来（工作区有没提交的改动？先 commit 或 git stash）" >&2
+            echo "ggcp: cherry-pick 没走完（冲突，或者这个补丁已经打过了、变成空提交）：" >&2
+            echo "      git cherry-pick --continue / --skip / --abort 自己收尾" >&2
         fi
         return 1
     fi
-    echo "ggcp: 已 cherry-pick 到 $(pwd) 的 $(git rev-parse --abbrev-ref HEAD) 分支"
+    _gr_green 打补丁成功
     return 0
+}
+
+# Change-Id -> 去 gerrit 查它的**所有提交**（同一 Change-Id 可能横跨多个分支 /
+# 多个 change，每个还有多个 patchset），打一张表（编号/patchset/仓库/路径/提交链接），
+# 然后挨个问"给这个仓库打这个补丁吗？"。答应的条目追加进 _GGCP_ITEMS。
+_gr_expand_changeids () {
+    local assume=$1 cid json rows line project rel mapfile
+    local -a all_rows=()
+    for cid in ${_GGCP_IDS}; do
+        if ! _gerrit_query_capture ${cid}; then
+            echo "ggcp: 连 ${_GERRIT_USER}@${_GERRIT_HOST}:${_GERRIT_PORT} 查询失败" >&2
+            return 1
+        fi
+        json=${_GERRIT_JSON}
+        if [[ -z ${json//[[:space:]]/} ]]; then
+            echo "ggcp: Change-Id ${cid} 在 gerrit 上查不到对应的提交（是不是别的服务器上的？）" >&2
+            return 1
+        fi
+        if ! rows=$(print -r -- ${json} | python3 ${WTOOL_GERRIT_TOOL} commits 2>&1); then
+            # 查询成功但一条 change 都没有时，gerrit query 只回一行 stats
+            echo "ggcp: Change-Id ${cid} 在 gerrit 上查不到对应的提交" >&2
+            print -r -- ${rows} >&2
+            return 1
+        fi
+        all_rows+=(${(f)rows})
+    done
+    if (( ${#all_rows} == 0 )); then
+        echo "ggcp: 这些 Change-Id 在 gerrit 上没有任何提交" >&2
+        return 1
+    fi
+
+    # 每行：编号 patchset 仓库 revision ref 提交链接 分支
+    mapfile=$(mktemp "${TMPDIR:-/tmp}/ggcp-paths.XXXXXX") || return 1
+    local seen="|" root
+    root=$(css 2>/dev/null)
+    for line in ${all_rows}; do
+        local -a f
+        IFS=$'\t' read -rA f <<< ${line}
+        project=${f[3]}
+        [[ -z ${project} ]] && continue
+        [[ ${seen} == *"|${project}|"* ]] && continue
+        seen+="${project}|"
+        if rel=$(_repo_project_relpath ${project}) && [[ -d ${root}/${rel} ]]; then
+            print -r -- "${project}"$'\t'${rel} >> ${mapfile}
+        elif [[ -n ${rel} ]]; then
+            print -r -- "${project}"$'\t'"(目录不存在)" >> ${mapfile}
+        else
+            print -r -- "${project}"$'\t'"(不在本地清单里)" >> ${mapfile}
+        fi
+    done
+
+    # 注意用 print -rl：print 会把多个参数**打在同一行**，这里要的是一行一条
+    print -rl -- ${all_rows} | python3 ${WTOOL_GERRIT_TOOL} table --path-map ${mapfile} \
+        || print -rl -- ${all_rows}
+    rm -f ${mapfile}
+
+    local number patchset revision ref url branch answer
+    for line in ${all_rows}; do
+        IFS=$'\t' read -r number patchset project revision ref url branch <<< ${line}
+        if [[ ${assume} == yes ]]; then
+            answer=0
+        elif [[ ${assume} == no ]]; then
+            answer=1
+        else
+            _gr_ask "给仓库 ${project} 打补丁 ${number} (patchset ${patchset}) 吗？[y/N/q] "
+            answer=$?
+            if (( answer == 2 )); then
+                echo "ggcp: 不再问了，剩下的都跳过" >&2
+                break
+            fi
+        fi
+        (( answer == 0 )) && _GGCP_ITEMS+=("${number}|${patchset}")
+    done
+    return 0
+}
+
+# ggcp <编号|链接|Change-Id> ...
+#   把 gerrit 上的提交抓回本地，cd 到它在清单里对应的项目目录，fetch 之后 cherry-pick。
+#   多个编号可以写成 1,2,3 或 1 2 3（等价，可混用）；链接里自动取编号；
+#   Change-Id 会先在 gerrit 上展开成它的所有提交，打表后逐个询问。
+#   -p <n> 指定 patchset（默认当前那个）；-y 全打不问；-n 全跳过。
+ggcp () {
+    local assume= ps_all= item number patchset rc=0
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -y|--yes)      assume=yes; shift ;;
+            -n|--no)       assume=no;  shift ;;
+            -p|--patchset) ps_all=$2; shift 2 ;;
+            --patchset=*)  ps_all=${1#*=}; shift ;;
+            -h|--help)     _gr_ggcp_usage; return 0 ;;
+            --)            shift; break ;;
+            -*)            echo "ggcp: 不认识的选项 '$1'" >&2; _gr_ggcp_usage; return 2 ;;
+            *)             break ;;
+        esac
+    done
+    if [[ $# -lt 1 ]]; then
+        _gr_ggcp_usage
+        return 2
+    fi
+    if [[ -n ${ps_all} && ! ${ps_all} == <-> ]]; then
+        echo "ggcp: patchset '${ps_all}' 不是数字" >&2
+        return 2
+    fi
+
+    _gr_collect_args "$@" || return $?
+    if (( ${#_GGCP_ITEMS} == 0 && ${#_GGCP_IDS} == 0 )); then
+        _gr_ggcp_usage
+        return 2
+    fi
+    _gerrit_resolve || return 1
+
+    # Change-Id 那条路：先在 gerrit 上展开成"编号 + patchset"，问过之后
+    # 追进 _GGCP_ITEMS —— 于是所有入口都坍缩成"按编号打补丁"。
+    if (( ${#_GGCP_IDS} )); then
+        _gr_expand_changeids ${assume} || return $?
+    fi
+
+    if (( ${#_GGCP_ITEMS} == 0 )); then
+        print -r -- "ggcp: 没有要打的补丁"
+        return 0
+    fi
+
+    for item in ${_GGCP_ITEMS}; do
+        number=${item%%|*}
+        patchset=${item#*|}
+        [[ -n ${ps_all} ]] && patchset=${ps_all}
+        _gr_apply_change ${number} ${patchset} || rc=1
+    done
+    return ${rc}
 }
 
 # ggco <分支|tag|commit>
@@ -901,7 +1204,11 @@ gchk () {
         return 2
     fi
     json=${_GERRIT_JSON}
-    print -r -- ${json} | python3 ${WTOOL_GERRIT_TOOL} check ${change}
+    # Change-Id 直接查出来的可能是好几个 change，这时不给编号（取第一个）
+    local -a cargs
+    cargs=(check)
+    [[ -z ${_GERRIT_CHANGEID} ]] && cargs+=(${change})
+    print -r -- ${json} | python3 ${WTOOL_GERRIT_TOOL} ${cargs}
     return $?
 }
 

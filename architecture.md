@@ -51,13 +51,44 @@ GitHub 仓库名仍是 `allinkernel/wtool-repo`，2026-10-04 由 `tools/repo` �
 | 族 | 命令 | 说明 |
 |---|---|---|
 | 定位 | `cs` `css` `ct` `ctt` `cm` `cmm` | 往上找 `.repo` / `.git`，cd 或打印 |
-| 跳项目 | `cdd <目标>` `cdd_path <目标>` | 按"现存文件/目录 → 清单项目名 → 相对 repo 根的路径"找 |
+| 跳项目 | `cdd <目标>` `cdd_path <目标>` | 按"现存文件/目录 → 清单项目名 → 相对 repo 根的路径 → **纯数字 = gerrit 提交编号**"找 |
 | 当前项目 | `cnp` `cnn` `cnb` `cnr` | 路径 / 名字 / 分支 / remote（走 `my_repo.py`） |
 | 清单查询 | `repo_mfst_get_name_from_path` 等 7 个 | 包 `my_repo.py` 的对应动作 |
 | 推送 | `gb` `gpun` `gbb` | `gb` 只打印命令；`gpun` 把那条 `git pull … --unshallow` 真跑掉（助手可执行）；`gbb` 会 `eval` 真的推（**助手不执行**） |
 | 抓取 | `ggco <分支\|tag\|commit>` | fetch 之后直接 checkout（不 cherry-pick、不 reset、不 push） |
-| gerrit | `ggcp <change> [patchset]` `gchk <change>` `gq [-r] <change>` `gpush [remote]` | 走 `ssh <gerrit> gerrit query` |
+| gerrit | `ggcp <编号\|链接\|Change-Id> ...` `gchk <change>` `gq [-r] <change>` `gpush [remote]` | 走 `ssh <gerrit> gerrit query` |
 | 同步/构建 | `rs` `rscur` `wninja` | `rs`/`rscur` 带 `--force-sync -d`（**会丢弃本地改动**） |
+
+### 4.0 `ggcp` / `cdd <编号>` 的实现要点（2026-10-09 大改）
+
+**`ggcp` 的参数坍缩**：所有入口最后都走同一个 `_gr_apply_change <编号> <patchset>`。
+
+- `_gr_collect_args`：先按英文逗号切 token（空格列表由 `$@` 天然拆开，两种可混用），
+  再逐个认 —— `I<40hex>` → `_GGCP_IDS`（Change-Id，稍后展开）；`http*://*` →
+  `_gerrit_parse_change_arg` 取编号（老式 `#/c/N[/P]` 和新式 `/+/N[/P]` 都认）；
+  `N/M` → 编号+patchset；纯数字 → 编号；其余报错返回 2。
+- `_gerrit_parse_change_arg` 现在也认裸 Change-Id：置 `_GERRIT_CHANGEID`，
+  `_GERRIT_CHANGE` 也等于它（`change:<Change-Id>` 在 gerrit query 里合法）。
+  Change-Id 不许再跟 patchset（返回 2）。
+- `_gr_expand_changeids`：`_gerrit_query_capture <Change-Id>` → `gerrit_query.py commits`
+  把**每个 patchset 各一行**（`number patchset project revision ref url branch`）→ 用
+  `_repo_project_relpath` 给每个项目算本地路径 → `gerrit_query.py table --path-map <文件>`
+  打对齐的表 → 逐行 `_gr_ask`（y/回车/n/q），答应的条目追进 `_GGCP_ITEMS`。
+  `-y` / `-n` 跳过询问。
+- `_gr_apply_change`：查询 → `gerrit_query.py patchset` → `cdd_path` → `_gerrit_project_remote`
+  → `git fetch`（输出吞进变量）→ 核对 `FETCH_HEAD == revision` → `git cherry-pick`（输出同上）。
+  正常路径只打 `正在下载N` / `正在打补丁N` / `打补丁成功`；任何一步失败打 `打补丁失败` +
+  关键错误到 stderr，返回 1。多个编号互不影响，最后整体返回"有没有失败过"。
+- 颜色：`_gr_color_on`（`WTOOL_GGCP_COLOR=always|never` → `NO_COLOR` → `[[ -t 1 ]]`），
+  `_gr_green` / `_gr_red` 按它决定加不加 `\033[32m` / `\033[31m`。
+- `_gerrit_query_change` 的 ssh 带 **`< /dev/null`**：ssh 会吞 stdin，而 Change-Id 那条路
+  要用 stdin 问用户（这个坑是实测踩到的，不加就"问了读不到答案"）。
+
+**`cdd <纯数字>`**：放在原有三条路（现存文件/目录 → 清单项目名 → 相对路径）**之后**，
+所以老用法优先级不变。`_cdd_project_from_change` 复用 `_gerrit_resolve` +
+`_gerrit_query_capture` + `gerrit_query.py patchset <n>`（第 5 列 = project），
+拿到项目名后**直接调 `cdd <项目名>`**（真的坍缩，不是复制一份逻辑）；
+仓库不在工作区时打 `cdd: N 对应的仓库名 X 在当前 repo 工作区不存在` 并返回 1。
 
 ### 4.1 `ggco` 的实现要点
 
@@ -91,13 +122,14 @@ GitHub 仓库名仍是 `allinkernel/wtool-repo`，2026-10-04 由 `tools/repo` �
 
 ## 5. 测试
 
-`tests/run_tests.sh`（`#!/bin/sh` + `set -eu`，173 条，不连网）：
+`tests/run_tests.sh`（`#!/bin/sh` + `set -eu`，303 条，不连网）：
 
 1. `my_repo.py`：假工作区（`.repo/repo` **不存在**、`<include>`、`local_manifests`、
    remote/project 级 revision）上的查询、`list`、错误处理；
 2. `gerrit_query.py`：patchset 选择、`check` 的退出码、`list` / `raw` / 坏输入；
 3. `env.zsh` / `env.bash` 对比：`for SHELL_NAME in zsh bash`，同一张用例表跑两个 shell
-   （`cnp` / `cnn` / `cdd` 的报错与退出码、`ggcp` 拆参数、`ggco` 端到端、`gpun` 端到端）；
+   （`cnp` / `cnn` / `cdd` 的报错与退出码、`ggcp` 参数坍缩与颜色退化、`ggco` 端到端、
+   `gpun` 端到端）；
 4. `ggco` 夹具：`$T/ggco/bare.git`（`git init --bare`）+ `$T/ggco/work`（clone），
    往裸仓推一条只有远端才有的 `feature` / `old`，然后在 clone 里跑 `ggco`
    （只推这个临时裸仓，不碰任何真 remote）；
@@ -106,6 +138,15 @@ GitHub 仓库名仍是 `allinkernel/wtool-repo`，2026-10-04 由 `tools/repo` �
    `gb` 由桩函数覆盖（`GPUN_GB_STUB`，形状与真 `gb` 逐字同形）。
    判据用 `git rev-parse --is-shallow-repository` 和 `git rev-list --count HEAD`：
    跑 `gpun` → 不再 shallow 且 40 个提交；跑 `gpun -30` / `gpun --depth=30` → 仍 shallow 且正好 30 个。
+
+6. `ggcp` / `cdd <编号>` 夹具：`$T/ggcp/` 下 —— `remote/proj.git`（"gerrit 服务器"：里面
+   有 `refs/changes/01/1/1`、`…/1/2`、`…/02/2/1` 三条 ref）、`ws/`（带 `.repo/manifests`
+   和 `.gerrit/client.conf` 的假工作区）、`ws/mylib`（真 git 仓，remote `polygerrit` 指向
+   那个裸仓）、`json/*.json`（`gerrit query` 的输出样本）、`stub.sh`（桩 `_gerrit_ssh`：
+   按 `change:<x>` 挑一个 JSON `cat` 出来）。**一条 ssh 都不发、一个网都不连**。
+   判据：输出逐行比对（`正在下载N` / `正在打补丁N` / `打补丁成功|失败`）、
+   `git log --format=%s` 看 cherry-pick 落点、`git rev-parse HEAD` 看 `-n` 时没动、
+   `grep -c '^打补丁失败$'` 数红行、`cksum` 比对 `ggco` 函数体。
 
 测试一开始就把 `HOME` / `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` / `XDG_DATA_HOME` /
 `XDG_STATE_HOME` 指向 `$T` 下的临时目录并 `export`（夹具的 git 和被测 shell 都只看见空配置，
