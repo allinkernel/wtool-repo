@@ -363,6 +363,64 @@ gb ()
     return $?
 }
 
+# gpun [<深度>]
+#   把 `gb` 打印的那条 `git pull <remote> <branch> --unshallow` **真的跑掉**
+#   （`gb` 只打印、`gbb` 只挑 push 那条；这条专管 shallow 仓补历史）。
+#   gpun -30 / gpun --depth=30 表示把 --unshallow 换成 --depth=30（只拉 30 层，不补全）。
+#   挑不到那条命令（gb 没给 / gb 自己失败）就报错返回 1 —— 不静默当成功；
+#   gb 的整段输出不刷给用户，只回显真正要跑的那一条。
+gpun ()
+{
+    local me=${FUNCNAME[0]}
+    local depth='' depth_set=0 usage_bad='' out cmd rc
+    if [ $# -gt 1 ]; then
+        usage_bad="参数太多（$# 个）"
+    else
+        case "${1-}" in
+            '') ;;
+            --depth=*) depth=${1#--depth=}; depth_set=1 ;;
+            -[0-9]*) depth=${1#-}; depth_set=1 ;;
+            *) usage_bad="参数不认：${1}" ;;
+        esac
+    fi
+    if [ -z "${usage_bad}" ] && [ "${depth_set}" -eq 1 ]; then
+        case ${depth} in
+            *[!0-9]*) usage_bad="深度要是正整数（>= 1）：'${depth}'" ;;
+            *[!0]*) ;;
+            *) usage_bad="深度要是正整数（>= 1）：'${depth}'" ;;
+        esac
+    fi
+    if [ -n "${usage_bad}" ]; then
+        printf '%s: %s\n' "${me}" "${usage_bad}" >&2
+        printf 'Usage: gpun [<深度> | --depth=<深度>]\n' >&2
+        printf '  gpun              # 跑 gb 给出的那条 git pull <remote> <branch> --unshallow\n' >&2
+        printf '  gpun -30          # 同上，但把 --unshallow 换成 --depth=30\n' >&2
+        printf '  gpun --depth=30   # 同上（等价写法）\n' >&2
+        return 2
+    fi
+
+    if ! out=$(gb); then
+        printf '%s: 拿不到 gb 的输出，没法确定要跑哪条 pull 命令\n' "${me}" >&2
+        return 1
+    fi
+    cmd=$(printf '%s\n' "${out}" | grep -E '^git pull .*[[:space:]]--unshallow$' | head -n 1)
+    if [ -z "${cmd}" ]; then
+        printf "%s: gb 没给出 'git pull <remote> <branch> --unshallow' 那条命令\n" "${me}" >&2
+        printf '      先单独跑一次 gb 看看它打印了什么\n' >&2
+        return 1
+    fi
+    if [ -n "${depth}" ]; then
+        cmd="${cmd%--unshallow}--depth=${depth}"
+    fi
+
+    printf '%s: 执行 %s\n' "${me}" "${cmd}"
+    if eval "${cmd}"; then rc=0; else rc=$?; fi
+    if [ "${rc}" -ne 0 ]; then
+        printf '%s: 上面这条 pull 失败（退出码 %s）\n' "${me}" "${rc}" >&2
+    fi
+    return ${rc}
+}
+
 # 直接推送到远端，注意如果是在公司需要gerrit审核，need_to_review需要设置成0
 # `need_to_review` means need to push HEAD to refs/for/BRANCH nor BRANCH
 gbb ()

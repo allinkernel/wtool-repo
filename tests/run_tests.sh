@@ -25,6 +25,19 @@ chk() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1（期望 [$3] 实际 [$2]
 T=$(mktemp -d "${TMPDIR:-/tmp}/wtool-repo-tests.XXXXXX")
 trap 'rm -rf -- "$T"' EXIT INT TERM
 
+# ---------------------------------------------------------------------------
+# 全程不碰真 $HOME：夹具跑的 git 和被测 shell 都用临时 HOME / XDG。
+# 两个好处：① 测试绝不读写用户家目录（git 的 ~/.gitconfig、zsh 的 ~/.zshenv）；
+# ② git 只看见空配置，不受用户全局 insteadOf / pull.rebase 之类的影响。
+# ---------------------------------------------------------------------------
+HOME="$T/home"
+XDG_CONFIG_HOME="$T/xdg/config"
+XDG_CACHE_HOME="$T/xdg/cache"
+XDG_DATA_HOME="$T/xdg/data"
+XDG_STATE_HOME="$T/xdg/state"
+export HOME XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_STATE_HOME
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
+
 WS="$T/company"
 mkdir -p "$WS/.repo/manifests" "$WS/.repo/local_manifests" \
          "$WS/device/emui/generic_a15" "$WS/kernel/common" "$WS/vendor/company/foo"
@@ -261,6 +274,55 @@ if command -v git >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
+# gpun 的夹具：本地裸仓（40 个提交）+ 一个 --depth=1 的 shallow clone
+#
+#   * 远端只是 $T 下的裸仓，URL 是 file:// —— **绝不碰真 remote、不联网**；
+#   * 40 个提交是有意的：--depth=30 之后还剩 10 个没拉下来，
+#     所以"跑了 --depth=30"（仍是 shallow、只多到 30 个提交）和
+#     "跑了 --unshallow"（不再是 shallow、40 个提交）能被严格区分开；
+#   * gb 用桩函数覆盖（真 gb 要站在 repo 工作区里、还要读清单），
+#     桩只打印和真 gb 逐字同形的那些行。
+# ---------------------------------------------------------------------------
+GPUN_OK=0
+GPUN_BARE="$T/gpun/bare.git"
+GPUN_SEED="$T/gpun/seed"
+GPUN_SHALLOW="$T/gpun/shallow"
+GPUN_TOTAL=40
+if command -v git >/dev/null 2>&1; then
+    mkdir -p "$T/gpun"
+    git init -q --bare "$GPUN_BARE"
+    git clone -q "$GPUN_BARE" "$GPUN_SEED" 2>/dev/null
+    (
+        cd "$GPUN_SEED"
+        git config user.name t
+        git config user.email t@t
+        git checkout -q -b main
+        i=1
+        while [ "$i" -le "$GPUN_TOTAL" ]; do
+            printf 'c%s\n' "$i" > f.txt
+            git add -A
+            git commit -qm "c$i"
+            i=$((i + 1))
+        done
+        git push -q -u origin main
+    )
+    # 裸仓的 HEAD 默认指 master（这里没有那条分支）：指到 main，clone 才不会空手而归
+    git -C "$GPUN_BARE" symbolic-ref HEAD refs/heads/main
+    GPUN_OK=1
+fi
+
+# 重新造一个 --depth=1 的 shallow clone（每条用例都从同一个起点开始）
+gpun_shallow_reset () {
+    rm -rf "$GPUN_SHALLOW"
+    git clone -q --depth=1 "file://$GPUN_BARE" "$GPUN_SHALLOW" 2>/dev/null
+    git -C "$GPUN_SHALLOW" config user.name t
+    git -C "$GPUN_SHALLOW" config user.email t@t
+}
+
+# 桩 gb：形状和真 gb 一样（含那条 git pull … --unshallow），但远端只有本地裸仓
+GPUN_GB_STUB="gb () { printf '%s\n' 'git push origin HEAD:refs/for/main' 'git push origin HEAD:main' 'git pull origin main --unshallow' 'git pull origin main' 'git fetch origin main --unshallow' 'git fetch origin main' 'remote: origin' 'branch: main'; }"
+
+# ---------------------------------------------------------------------------
 # env.zsh：zsh 层的用法报错
 # 这一节钉的就是"在公司敲了 cnp <路径> 没反应"那类事：
 # 命令必须明确告诉你"参数用错了/该用哪条命令"，而不是静默忽略或含糊其辞。
@@ -415,6 +477,124 @@ EOF
             *"不是 git 仓库"*) ok "ggco 说清不在 git 仓库里" ;;
             *) bad "ggco 的报错不清楚：[$out]" ;;
         esac
+    fi
+
+    # ---- gpun：把 gb 给出的那条 git pull --unshallow 真跑掉（本地裸仓，不联网）----
+    if [ "$GPUN_OK" != 1 ]; then
+        echo "  （没装 git，gpun 这几条跳过）"
+    else
+        echo "== env.$SHELL_NAME：gpun（临时裸仓 + 桩 gb，不联网）=="
+
+        # (1) 不带参数：跑 --unshallow，shallow 仓被补全
+        gpun_shallow_reset
+        srun "cd $GPUN_SHALLOW
+            $GPUN_GB_STUB
+            gpun"
+        chk "gpun 正常：退出码 0" "$rc" "0"
+        case $out in
+            *"gpun: 执行 git pull origin main --unshallow"*) ok "gpun 回显了要跑的那条命令" ;;
+            *) bad "gpun 没回显要跑的命令：[$out]" ;;
+        esac
+        case $out in
+            *"remote: origin"*|*"git push origin"*|*"git fetch origin"*)
+                bad "gpun 把 gb 的整段输出刷出来了：[$out]" ;;
+            *) ok "gpun 没把 gb 的整段输出刷出来" ;;
+        esac
+        chk "gpun 真的跑成了（不再是 shallow 仓）" \
+            "$(git -C "$GPUN_SHALLOW" rev-parse --is-shallow-repository)" "false"
+        chk "gpun 补齐了全部 $GPUN_TOTAL 个提交" \
+            "$(git -C "$GPUN_SHALLOW" rev-list --count HEAD)" "$GPUN_TOTAL"
+
+        # (2) gpun -30：--unshallow 换成 --depth=30，仓仍是 shallow、只多到 30 个提交
+        gpun_shallow_reset
+        srun "cd $GPUN_SHALLOW
+            $GPUN_GB_STUB
+            gpun -30"
+        chk "gpun -30：退出码 0" "$rc" "0"
+        case $out in
+            *"gpun: 执行 git pull origin main --depth=30"*) ok "gpun -30 换成了 --depth=30" ;;
+            *) bad "gpun -30 换出来的命令不对：[$out]" ;;
+        esac
+        chk "gpun -30：仓库仍然是 shallow（没被 --unshallow 补全）" \
+            "$(git -C "$GPUN_SHALLOW" rev-parse --is-shallow-repository)" "true"
+        chk "gpun -30：深度正好是 30" \
+            "$(git -C "$GPUN_SHALLOW" rev-list --count HEAD)" "30"
+
+        # (3) --depth=30 这种写法等价
+        gpun_shallow_reset
+        srun "cd $GPUN_SHALLOW
+            $GPUN_GB_STUB
+            gpun --depth=30"
+        chk "gpun --depth=30：退出码 0" "$rc" "0"
+        case $out in
+            *"gpun: 执行 git pull origin main --depth=30"*) ok "gpun --depth=30 和 -30 等价" ;;
+            *) bad "gpun --depth=30 换出来的命令不对：[$out]" ;;
+        esac
+        chk "gpun --depth=30：深度正好是 30" \
+            "$(git -C "$GPUN_SHALLOW" rev-list --count HEAD)" "30"
+
+        # (4) gb 没给出那条命令：明确报错、非 0，且**不跑任何 pull**
+        gpun_shallow_reset
+        srun "cd $GPUN_SHALLOW
+            gb () { printf '%s\n' 'git push origin HEAD:main' 'remote: origin' 'branch: main'; }
+            gpun"
+        chk "gpun 挑不到那条命令：退出码 1" "$rc" "1"
+        case $out in
+            *"gb 没给出 'git pull <remote> <branch> --unshallow' 那条命令"*)
+                ok "gpun 明说 gb 没给出那条命令" ;;
+            *) bad "gpun 的报错不清楚：[$out]" ;;
+        esac
+        chk "gpun 挑不到命令时什么都不跑" \
+            "$(git -C "$GPUN_SHALLOW" rev-list --count HEAD)" "1"
+
+        # (5) gb 自己失败（不在项目目录里）：不把失败当成功
+        srun "gb () { printf 'gb: not in project dir!!!\n' >&2; return 1; }
+            gpun"
+        chk "gpun 在 gb 失败时：退出码 1" "$rc" "1"
+        case $out in
+            *"拿不到 gb 的输出"*) ok "gpun 说清是 gb 没给出输出" ;;
+            *) bad "gpun 的报错不清楚：[$out]" ;;
+        esac
+
+        # (6) 完整仓（不是 shallow）：gb 照样给那条命令，由 git 自己报错，gpun 如实传出来
+        srun "cd $GPUN_SEED
+            $GPUN_GB_STUB
+            gpun"
+        if [ "$rc" -ne 0 ]; then
+            ok "完整仓跑 gpun：git 报错、退出码非 0（$rc）"
+        else
+            bad "完整仓跑 gpun 应该失败，却退出码 0"
+        fi
+        case $out in
+            *"gpun: 上面这条 pull 失败（退出码"*) ok "gpun 说明了这条 pull 失败" ;;
+            *) bad "gpun 没说 pull 失败：[$out]" ;;
+        esac
+        chk "完整仓不会被 gpun 弄坏" \
+            "$(git -C "$GPUN_SEED" rev-list --count HEAD)" "$GPUN_TOTAL"
+
+        # (7) 用法错误：一律退出码 2 + 打出用法
+        for _case in 'abc' '-0' '--depth=' '--depth=x' '-30 -40'; do
+            srun "gpun $_case"
+            chk "gpun $_case：退出码 2" "$rc" "2"
+            case $out in
+                *"Usage: gpun"*) ok "gpun $_case：打出了用法" ;;
+                *) bad "gpun $_case 没打用法：[$out]" ;;
+            esac
+        done
+
+        # (8) 万一 gb 给了多条（正常不会）：取第一条，不把两条拼一起跑
+        gpun_shallow_reset
+        srun "cd $GPUN_SHALLOW
+            gb () { printf '%s\n' 'git pull origin main --unshallow' 'git pull backup main --unshallow'; }
+            gpun"
+        chk "gb 给多条时：退出码 0（只跑第一条）" "$rc" "0"
+        case $out in
+            *"gpun: 执行 git pull origin main --unshallow"*)
+                ok "gb 给多条时取第一条" ;;
+            *) bad "gb 给多条时的行为不对：[$out]" ;;
+        esac
+        chk "gb 给多条时：真的只补了这一个仓" \
+            "$(git -C "$GPUN_SHALLOW" rev-list --count HEAD)" "$GPUN_TOTAL"
     fi
 done
 

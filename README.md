@@ -36,6 +36,7 @@
 | 查询 | `repo_mfst_get_*` | 7 个查询函数，见下（包 `my_repo.py`） |
 | git | `cnb` / `cnr` | 当前项目在清单里声明的分支 / remote |
 | git | `gb` | **打印** push/pull/fetch 命令（只在有 `polygerrit` remote 时多列一行送检命令） |
+| git | `gpun [<深度>\|--depth=<深度>]` | 把 `gb` 打印的 `git pull <remote> <branch> --unshallow` **真的跑掉**（带深度就换成 `--depth=<深度>`） |
 | git | `gbb` | 按 `gb` 给出的命令**真的推**（公司 gerrit 环境可切成送检） |
 | git | `ggco <分支\|tag\|commit>` | 抓远端某个 ref 下来并**直接切过去**（fetch → checkout） |
 | gerrit | `ggcp <change> [patchset]` | 把 gerrit 上某个 patchset 抓回本地、cd 到对应项目、cherry-pick |
@@ -139,7 +140,7 @@ action: name_from_path | path_from_name
   测试目前只钉住"upstream 优先于 revision"那一条。
 - 找不到项目/路径：stderr 一行原因，退出码 **1**（不是 traceback）。
 
-### 5. 推送：`gb` / `gbb`
+### 5. 推送与补历史：`gb` / `gpun` / `gbb`
 
 `gb` **只打印**（不执行）—— 在项目目录里跑一次，把该敲的命令抄下来：
 
@@ -160,6 +161,44 @@ git remote -v 的输出
 ```
 polygerrit: git push polygerrit HEAD:refs/for/<branch>   # 送检（+2 后才进 main）
 ```
+
+#### `gpun [<深度> | --depth=<深度>]` —— 把 `gb` 那条 `--unshallow` 真跑掉
+
+```sh
+gpun              # 跑 gb 给出的 `git pull <remote> <branch> --unshallow`（补全整个历史）
+gpun -30          # 同上，但把 --unshallow 换成 --depth=30（只拉 30 层，不补全）
+gpun --depth=30   # 同上（等价写法）
+```
+
+`gb` / `gbb` / `gpun` 三条是一套：`gb` **只打印**，`gbb` 只挑 **push** 那条，`gpun` 只挑
+**pull** 那条（`git pull <remote> <branch> --unshallow`）—— 它是给 shallow 仓补历史的。
+
+行为：
+
+1. 先跑 `gb`，从它的输出里挑出**唯一**那条 `git pull … --unshallow`
+   （`^git pull .*[[:space:]]--unshallow$`，只认 GNU/POSIX `grep -E`，**不需要 `-P`**）；
+   挑不出来（`gb` 没给、或 `gb` 自己失败）就报错返回 1，**不静默当成功**。
+   多条时取第一条（`gb` 正常只给一条）。
+2. 在执行**之前**回显一行 `gpun: 执行 <命令>` —— 让你看清到底跑了什么；
+   `gb` 的其它输出（push 那几行、`remote:` / `branch:`、`git remote -v`）**不会**刷出来。
+3. **真的执行**它（`eval`），然后把 git 的退出码原样返回；非 0 时多说一句
+   `gpun: 上面这条 pull 失败（退出码 <N>）`。
+
+参数与退出码：
+
+| 情形 | 输出 | 退出码 |
+|---|---|---|
+| `gpun` | `gpun: 执行 git pull <remote> <branch> --unshallow` + git 的输出 | git 的退出码（成功 0） |
+| `gpun -30` / `gpun --depth=30` | `gpun: 执行 git pull <remote> <branch> --depth=30` + git 的输出 | 同上 |
+| 参数不认（`gpun abc`）、深度不是正整数（`-0` / `--depth=` / `--depth=x`）、参数多于 1 个 | `gpun: <原因>` + `Usage: gpun …`（stderr） | **2** |
+| `gb` 挑不出那条命令 | `gpun: gb 没给出 'git pull <remote> <branch> --unshallow' 那条命令` | **1** |
+| `gb` 自己失败（不在项目目录里） | `gpun: 拿不到 gb 的输出，没法确定要跑哪条 pull 命令` | **1** |
+| git 自己失败（例如**不是** shallow 仓） | git 的报错 + `gpun: 上面这条 pull 失败（退出码 <N>）` | git 的退出码（如 1） |
+
+> `gpun` 不自己判断"是不是 shallow 仓"：`gb` 不管仓浅不浅都会打印那条命令，
+> 所以完整仓上跑 `gpun` 会由 git 自己报
+> `fatal: --unshallow on a complete repository does not make sense`（退出码 1）。
+> 想只加深或只想拉浅一点，用 `gpun -<深度>`。
 
 `gbb` **真的推**，规则：
 
@@ -402,38 +441,58 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 | `rs` / `rscur` 把本地改动弄没了 | 它们带 `--force-sync -d`，就是会丢弃本地改动/强制覆盖 —— 跑之前先 commit 或 stash |
 | `wninja` 报 `Error: No ninja build file found.` | 没找到 `out/combined-*.ninja` / `out/build.ninja` / `out/*/*/build.ninja`；先按项目的构建流程生成 |
 | `gbb` 说 `grep: -P` 之类的错 | 它用 GNU grep 的 `-P`；BusyBox grep / macOS 自带 grep 不认 |
+| `gpun: gb 没给出 'git pull <remote> <branch> --unshallow' 那条命令`（返回 1） | `gb` 的输出里没有那条（不在项目目录里？项目自己盖了 `gb`？）；先单独跑一次 `gb` 看它打印了什么。**这条不会替你猜一条命令去跑** |
+| `gpun: 拿不到 gb 的输出，没法确定要跑哪条 pull 命令`（返回 1） | `gb` 自己失败了（多半是"不在项目目录里"，`gb: not in project dir!!!` 就在上面一行）；先 `cd` 进项目 |
+| `gpun: 深度要是正整数（>= 1）：'-0'`（返回 2） | 深度只认十进制正整数；`-0` / `--depth=` / `--depth=x` 都不行，看一眼它打出的 `Usage` |
+| `gpun: 上面这条 pull 失败（退出码 1）` + `fatal: --unshallow on a complete repository does not make sense` | 这个仓本来就**不是** shallow 仓，`--unshallow` 没意义；想拉就用 `gpun -<深度>`，或直接 `git pull` |
+| `gpun: 上面这条 pull 失败（退出码 …）` + 别的 git 报错 | git 自己失败（网络/权限/冲突…），按 git 的报错处理；`gpun` 只回显和转发退出码 |
 
 ## 测试
 
 ```sh
-sh tests/run_tests.sh      # 107 条（四段合计，以脚本最后打印的通过/失败数为准）
+sh tests/run_tests.sh      # 173 条（五段合计，以脚本最后打印的通过/失败数为准）
 ```
 
-测试分四段（都在临时目录里造"公司环境"的假工作区 / 假裸仓，不碰真工作区）：
+测试分五段（都在临时目录里造"公司环境"的假工作区 / 假裸仓，不碰真工作区）：
 
 1. **`my_repo.py`**（基本查询、分支/remote 解析、`local_manifests` 的增删、`list`、错误处理、
    "没有 `.repo/repo` 也能跑"）；
 2. **`gerrit_query.py`**（patchset 选择、`check` 的退出码、`list` / `raw` / 坏输入）；
 3. **`env.zsh` / `env.bash` 对比**（`cnp` / `cdd` 的用法报错、`ggcp` 的参数解析、
-   `ggco` 端到端 —— 不连网），**同一张用例表跑两个 shell**，用来钉住"两份等价"；
+   `ggco` 端到端、`gpun` 端到端 —— 不连网），**同一张用例表跑两个 shell**，
+   用来钉住"两份等价"；
 4. **`ggco` 的裸仓夹具**（本地 `git init --bare` + clone，`git push` 只推到那个临时裸仓）：
    新分支 fetch→checkout 后 `HEAD` 必须等于裸仓那条 ref、本地同名分支落后时拒绝并保持原位、
    远端没有这个 ref、工作树脏、用法错误、不在 git 仓库里 —— 每一条的退出码和报错文字都断言。
+5. **`gpun` 的 shallow 夹具**（本地裸仓 40 个提交 + `git clone --depth=1 file://…`，
+   `gb` 用桩函数覆盖）：`gpun` 之后**不再是** shallow 仓且 40 个提交齐全（证明真跑了
+   `--unshallow`）、`gpun -30` / `gpun --depth=30` 之后**仍是** shallow 仓且正好 30 个提交
+   （证明 `--unshallow` 真被换成了 `--depth=30`）、桩 `gb` 不给那条命令时返回 1 且**一个
+   commit 都没多**、`gb` 自己失败时返回 1、完整仓上由 git 报错并按 git 的退出码返回、
+   桩 `gb` 给两条时只跑第一条、五种用法错误返回 2 —— 每一条的退出码、回显的命令、
+   报错文字都断言。
 
 夹具故意造成"公司环境"的样子：**没有 `.repo/repo`**、清单里有 `<include>`、
 `local_manifests` 里 `remove-project` / 覆盖 revision。
+
+> 整份测试跑的时候 `HOME` / `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` / `XDG_DATA_HOME` /
+> `XDG_STATE_HOME` 全部指向临时目录 —— 夹具的 `git` 和被测 shell 都只看见这份空配置，
+> **不读写真 `$HOME`**，也不受用户全局 `insteadOf` / `pull.rebase` 之类的影响。
 
 ## 依赖
 
 - **python3**（3.6+）：`my_repo.py` / `gerrit_query.py` 只用标准库，不装第三方包。
 - **zsh 或 bash**：两个 shell 各一份 env，命令、报错、退出码一致。
   `tests/run_tests.sh` 用**同一张用例表**把两个 shell 都跑一遍，它覆盖的是
-  `cnp` / `cnn` / `cdd` 的报错与退出码、`ggcp` 的拆参数、以及 `ggco` 的端到端；
+  `cnp` / `cnn` / `cdd` 的报错与退出码、`ggcp` 的拆参数、`ggco` 与 `gpun` 的端到端；
   其余命令的"两份等价"靠的是**同改两份文件**，不是测试。
-- **git**：`ggco` 全程只用 `git`（`rev-parse` / `status` / `fetch` / `checkout` /
-  `show-ref` / `remote`），不需要 python、不需要 ssh 配置（remote URL 是 https 也能用）。
+- **git**：`ggco` / `gpun` 全程只用 `git`（`ggco`：`rev-parse` / `status` / `fetch` /
+  `checkout` / `show-ref` / `remote`；`gpun`：`pull`），不需要 python、不需要 ssh 配置
+  （remote URL 是 https / file:// 也能用）。
 - **ssh**：`ggcp` / `gchk` / `gq` 走 `ssh <gerrit> gerrit query`，公钥要在 gerrit 上登记过。
 - **GNU grep（要 `-P`）**：`gbb` 挑命令行用。
+- **grep（`-E` 即可）+ `head`**：`gpun` 从 `gb` 的输出里挑那条 `git pull … --unshallow`
+  （POSIX ERE，BusyBox / macOS 自带 grep 也认；这是它和 `gbb` 的一处不同）。
 - **`rg`（ripgrep，要 `--pcre2`）** 和 **`nproc`**：`rscur` 用；
   `rs` 用 `/proc/cpuinfo` 数 CPU。
 - **repo 客户端**：`rs` / `rscur` / `wninja` 分别调用 `repo manifest` / `repo sync` /
@@ -463,7 +522,7 @@ sh tests/run_tests.sh      # 107 条（四段合计，以脚本最后打印的�
 | `env.zsh` / `env.bash` | 全部命令 + 内联 `_up_to_have_dir` + 两个工具路径（zsh / bash 两份，等价） |
 | `my_repo.py` | manifest 查询工具（自包含解析，见上） |
 | `gerrit_query.py` | 解析 `gerrit query --format=JSON` 的输出（供 `ggcp` / `gchk` / `gq` 用） |
-| `tests/run_tests.sh` | 上面两个 python 工具的测试 + `env.zsh`/`env.bash` 的行为对比（含 `ggco` 的裸仓端到端） |
+| `tests/run_tests.sh` | 上面两个 python 工具的测试 + `env.zsh`/`env.bash` 的行为对比（含 `ggco` / `gpun` 的裸仓端到端） |
 | `architecture.md` | 代码现在长什么样（现状，只写现状） |
 | `BACKLOG.md` | 这个项目"接下来做什么、做到哪了" |
 
