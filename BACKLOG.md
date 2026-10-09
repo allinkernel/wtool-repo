@@ -7,6 +7,40 @@
 
 ---
 
+## ✅ 追加：`WTOOL_GGCP_COLOR` 按用户要求移除 + `1234/2` 写法写进文档（2026-10-09）
+
+**背景**：上一条做完后用户回了两句 —— ① "1234/2，可以，斜杠就行"；
+② 对 `WTOOL_GGCP_COLOR` 的反应是"不知道是干啥的"。
+
+**做了什么**（**只追加这一节，上一条的历史条目一个字没改**）：
+
+1. **删掉 `WTOOL_GGCP_COLOR`**（用户可见的旋钮只有用户能加）：`env.zsh` / `env.bash` 里
+   `_gr_color_on` 现在**只有自动两条** —— 设了 `NO_COLOR` → 不上色；否则 `[[ -t 1 ]]`
+   （stdout 是 tty）→ 上色；管道/重定向里自动退化成纯文本。
+   README「配置项」表那一行、§6 的颜色说明、architecture.md §4.0 的描述一并删掉。
+2. **`1234/2` 写成明确规则**：README §6 加一句"指定 patchset 只有 `1234/2` 和 `-p 2`
+   两种写法，**老写法 `ggcp 1234 1` 故意不支持**（会被当成编号 1234 和编号 1）"；
+   architecture.md §4.0 同步。
+3. **测试跟着改**：原来靠 `WTOOL_GGCP_COLOR=always` 验颜色的三条用例删掉，换成
+   **真 pty**（`script -qec … /dev/null`，断言前 `tr -d '\r'`）：绿行/红行必须带
+   `\033[32m` / `\033[31m`、真 pty 里跑一次真 `ggcp 1` 成功行也要带色、
+   真 pty + `NO_COLOR` 依旧无色；非 tty 那条改成"一个 ANSI 码都没有"。
+   ⚠️ 踩到的坑：**跑测试的环境自己就设了 `NO_COLOR=1`**（本机实测 `env | grep NO_COLOR`），
+   所以"该上色"的用例都显式 `unset NO_COLOR` / `env -u NO_COLOR` —— 否则测的是
+   NO_COLOR 规则而不是 tty 规则（第一次跑就是这么红的，6 条 FAIL）。
+
+**验证到什么程度**：`sh tests/run_tests.sh` → **309 通过 / 0 失败**（上一版 303）；
+颜色两条规则都在用例里钉住了（真 pty 上色 / 非 tty 与 NO_COLOR 不上色）。
+端到端演示重跑并覆盖了"真 pty 里是绿的、管道里是纯文本"两段：
+`/tmp/ggcp-demo.txt`（重写）与 `/tmp/ggcp-demo2.txt`（只演颜色那两段）。
+
+**判据（可原地重跑）**：
+
+```sh
+cd ~/self/wtool/tools/git-repo-sh-tools && sh tests/run_tests.sh   # 309 通过, 0 失败
+grep -c $'\033\[32m' /tmp/ggcp-demo.txt                          # >0：演示文件里有真绿码
+```
+
 ## ✅ `ggcp` 大改 + `cdd <gerrit 编号>` —— 做完（2026-10-09，提交见 `git log ds_dev`）
 
 **做了什么**（用户逐条要求，接口写在 `README.md` §6，实现要点在 `architecture.md` §4.0）：

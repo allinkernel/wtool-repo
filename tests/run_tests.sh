@@ -589,24 +589,51 @@ EOF
     srun 'ggcp -p x 1'
     chk "ggcp -p 不是数字：退出码 2" "$rc" "2"
 
-    # ---- 颜色：不是 tty 就退化成纯文本（测试才逐字节可比）----
-    srun 'ggcp 1 2>/dev/null'
+    # ---- 颜色：只有自动两条（NO_COLOR / stdout 是不是 tty），没有强制开关 ----
+    # ⚠️ 跑测试的环境本身可能设了 NO_COLOR（本机实测就有 NO_COLOR=1）——
+    #    所以"该上色"的用例必须显式 `unset NO_COLOR` / `env -u NO_COLOR`，
+    #    否则测的是 NO_COLOR 那条规则，不是 tty 那条。
+    ESC=$(printf '\033')
+    srun 'unset NO_COLOR; ggcp 1 2>/dev/null'
     case $out in
-        *"$(printf '\033')"*) bad "非 tty 时不该有 ANSI 颜色码：[$out]" ;;
-        *) ok "非 tty：输出是纯文本（没有 ANSI 码）" ;;
+        *"$ESC"*) bad "非 tty 时不该有 ANSI 颜色码：[$out]" ;;
+        *) ok "非 tty（stdout 是管道）：输出是纯文本，一个 ANSI 码都没有" ;;
     esac
-    srun 'WTOOL_GGCP_COLOR=always _gr_green 打补丁成功'
-    case $out in
-        *"$(printf '\033')[32m打补丁成功$(printf '\033')[0m"*) ok "WTOOL_GGCP_COLOR=always：绿色能出来" ;;
-        *) bad "强制颜色时没出绿色：[$out]" ;;
-    esac
-    srun 'NO_COLOR=1 WTOOL_GGCP_COLOR=always _gr_red 打补丁失败'
-    case $out in
-        *"[0m"*) ok "WTOOL_GGCP_COLOR=always 压过 NO_COLOR（测试用得到）" ;;
-        *) bad "强制颜色没生效：[$out]" ;;
-    esac
-    srun 'WTOOL_GGCP_COLOR=never _gr_green 打补丁成功'
-    chk "WTOOL_GGCP_COLOR=never：纯文本" "$out" "打补丁成功"
+    srun 'NO_COLOR=1 _gr_red 打补丁失败'
+    chk "NO_COLOR=1：红行退化成纯文本" "$out" "打补丁失败"
+
+    # 真 pty：用 script(1) 起一个伪终端，stdout 就是 tty —— 这时候必须上色。
+    # （script 会把 \n 写成 \r\n，断言前先 tr -d '\r'）
+    if command -v script >/dev/null 2>&1; then
+        pty_eval () {   # $1 = 片段；设置 out / rc（输出里保留 ANSI）
+            cat > "$T/p.script" <<EOF
+WTOOL_PROJECT_DIR='$here/..'
+source "\$WTOOL_PROJECT_DIR/env.$SHELL_NAME"
+cd '$WS/kernel/common'
+$1
+EOF
+            rc=0
+            # env -u NO_COLOR：见上面那条注释（环境自带 NO_COLOR 时这里测不出 tty 规则）
+            out=$(script -qec "env -u NO_COLOR $SHELL_NAME $T/p.script" /dev/null 2>&1 | tr -d '\r') || rc=$?
+        }
+        pty_eval '_gr_green 打补丁成功'
+        case $out in
+            *"$ESC[32m打补丁成功$ESC[0m"*) ok "真 pty（script）：绿行带 ANSI 色码" ;;
+            *) bad "真 pty 里没上绿色：[$out]" ;;
+        esac
+        pty_eval '_gr_red 打补丁失败'
+        case $out in
+            *"$ESC[31m打补丁失败$ESC[0m"*) ok "真 pty（script）：红行带 ANSI 色码" ;;
+            *) bad "真 pty 里没上红色：[$out]" ;;
+        esac
+        pty_eval 'NO_COLOR=1 _gr_green 打补丁成功'
+        case $out in
+            *"$ESC"*) bad "NO_COLOR 在真 pty 里也该关掉颜色：[$out]" ;;
+            *) ok "真 pty + NO_COLOR：照样不给颜色" ;;
+        esac
+    else
+        echo "  （没装 script，真 pty 那三条颜色用例跳过）"
+    fi
 
     # ---- ggcp 端到端：桩 gerrit（喂 JSON）+ 本地裸仓（真 fetch / cherry-pick）----
     if [ "$GGCP_OK" != 1 ]; then
@@ -626,6 +653,20 @@ EOF
         chk "ggcp 1：真的 cherry-pick 上来了" \
             "$(git -C "$GGCP_WORK" log --oneline -1 --format=%s)" "lab: change one (ps1)"
         chk "ggcp 1：新文件在" "$(cat "$GGCP_WORK/ps1.txt" 2>/dev/null)" "ps1"
+
+        # 同一个命令放到真 pty 里跑：成功那行必须**带 ANSI 色码**（上面管道里那条是纯文本）
+        if command -v script >/dev/null 2>&1; then
+            ggcp_reset
+            pty_eval "source $GGCP_ROOT/stub.sh
+                cd $GGCP_WORK
+                ggcp 1"
+            chk "真 pty 里 ggcp 1：退出码 0" "$rc" "0"
+            case $out in
+                *"$ESC[32m打补丁成功$ESC[0m"*) ok "真 pty 里 ggcp 的成功行带绿色码" ;;
+                *) bad "真 pty 里 ggcp 没上色：[$out]" ;;
+            esac
+            ggcp_reset
+        fi
 
         # 多编号 + 链接 + 混用：一次打三个（ps1 那个已经打过了，所以再来一次会红）
         ggcp_reset

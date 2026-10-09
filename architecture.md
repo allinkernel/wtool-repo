@@ -79,8 +79,11 @@ GitHub 仓库名仍是 `allinkernel/wtool-repo`，2026-10-04 由 `tools/repo` �
   → `git fetch`（输出吞进变量）→ 核对 `FETCH_HEAD == revision` → `git cherry-pick`（输出同上）。
   正常路径只打 `正在下载N` / `正在打补丁N` / `打补丁成功`；任何一步失败打 `打补丁失败` +
   关键错误到 stderr，返回 1。多个编号互不影响，最后整体返回"有没有失败过"。
-- 颜色：`_gr_color_on`（`WTOOL_GGCP_COLOR=always|never` → `NO_COLOR` → `[[ -t 1 ]]`），
+- 颜色：`_gr_color_on` **只有自动两条** —— 设了 `NO_COLOR` → 不上色；否则 `[[ -t 1 ]]`
+  （stdout 是 tty）→ 上色；管道/重定向里自动退化成纯文本。没有强制开关。
   `_gr_green` / `_gr_red` 按它决定加不加 `\033[32m` / `\033[31m`。
+- patchset 的写法：`1234/2` 或 `-p <n>`。**第二个位置参数不再是 patchset** ——
+  `ggcp 1234 1` 就是"编号 1234 + 编号 1"（用户 2026-10-09 认可斜杠写法，老写法故意不支持）。
 - `_gerrit_query_change` 的 ssh 带 **`< /dev/null`**：ssh 会吞 stdin，而 Change-Id 那条路
   要用 stdin 问用户（这个坑是实测踩到的，不加就"问了读不到答案"）。
 

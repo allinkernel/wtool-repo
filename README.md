@@ -303,6 +303,11 @@ ggcp -n I1111…                              # 全跳过，只打表
 | `-n` / `--no` | 不再逐个问，全都跳过 |
 | `-h` / `--help` | 打用法 |
 
+⚠️ **指定 patchset 只有两种写法：`1234/2`（斜杠）和 `-p 2`**。
+**老写法 `ggcp 1234 1` 故意不支持** —— 第二个位置参数现在也是"一个编号"，
+所以 `ggcp 1234 1` 会被当成**编号 1234 和编号 1 两个补丁**（这正是"空格分隔多个编号"的代价，
+用户 2026-10-09 明确认可 `1234/2` 斜杠写法）。
+
 **按 Change-Id 打**（`I` + 40 位十六进制）时，它先去 gerrit 查这个 Change-Id 的**所有提交**
 （同一个 Change-Id 可能横跨多个分支 / 多个 change，每个还有多个 patchset），打一张表，
 再**挨个问**"给这个仓库打这个补丁吗？"：
@@ -344,8 +349,8 @@ ggcp -n I1111…                              # 全跳过，只打表
 打补丁失败          # 红色
 ```
 
-有几个编号就有几组这样的行。颜色在 **stdout 不是 tty**、或者设了 **`NO_COLOR`** 时
-自动退化成纯文本（测试才逐字节可比）；`WTOOL_GGCP_COLOR=always|never` 可以强制。
+有几个编号就有几组这样的行。颜色**只有自动两条，没有开关**：设了 `NO_COLOR` 就不上色；
+否则 **stdout 是 tty**（终端里）才上色，重定向/管道里自动退化成纯文本。
 一个编号失败不影响后面的编号继续打，但**整体退出码是 1**。
 
 #### `gchk <change>` —— 能不能推 main
@@ -459,7 +464,6 @@ wninja -C out build_image
 | `WTOOL_GERRIT_USER` | 你 | ssh 用户名，默认 `$USER` |
 | `WTOOL_GERRIT_SSH_KEY` | 你 | ssh 私钥，给了就 `-i <key> -o IdentitiesOnly=yes` |
 | `WTOOL_GERRIT_CONF` | 你 | 额外的 gerrit 配置文件路径（优先于另外两个默认位置） |
-| `WTOOL_GGCP_COLOR` | 你（可选） | `always` / `never` 强制 `ggcp` 的绿/红输出；不给就看 stdout 是不是 tty（不是就退化成纯文本），`NO_COLOR` 也能关 |
 
 gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf`、`~/.wtool/gerrit.conf`；
 键名 `host` / `port` / `user` / `sshkey`。`gb` / `gbb` 读的是**清单**里声明的 branch/remote
@@ -539,7 +543,10 @@ sh tests/run_tests.sh      # 303 条（六段合计，以脚本最后打印的�
    （remote 叫 `polygerrit`，指向那个裸仓）。钉的是：
    - **参数坍缩**：`1,2,3` / `1 2 3` / `1,2 3` 等价、`1234/2`、两种链接、
      `<链接>` 带 `?` 后缀、Change-Id 单独收集、乱参数返回 2；
-   - **颜色退化**：非 tty 时输出里不允许有 ANSI 码；`WTOOL_GGCP_COLOR=always` 能强制出绿/红；
+   - **颜色**：非 tty（管道）里一个 ANSI 码都不许有；`NO_COLOR=1` 时也不许有；
+     **真 pty**（`script -qec` 起伪终端，断言前 `tr -d '\r'`）里绿/红必须带 `\033[32m` /
+     `\033[31m`，连真跑一次 `ggcp 1` 的成功行也要带色。⚠️ 用例里显式 `unset NO_COLOR` /
+     `env -u NO_COLOR` —— 跑测试的环境自己可能就设了 `NO_COLOR`（本机实测有）；
    - **端到端**：`ggcp 1` 的输出**逐字节**等于三行（`正在下载1` / `正在打补丁1` / `打补丁成功`）
      且 HEAD 上真多了那个提交；`ggcp 1 2` 六行、两个都进来；同一个补丁打第二遍是
      `打补丁失败`（红）+ 退出码 1；Change-Id 会打表（编号/patchset/仓库/路径/提交链接）、

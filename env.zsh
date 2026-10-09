@@ -793,13 +793,9 @@ _gerrit_query_capture () {
 # git fetch、cherry-pick 的原始输出一律吞掉，只有失败时才把关键错误打到 stderr。
 # ---------------------------------------------------------------------------
 
-# 颜色：stdout 不是 tty（或设了 NO_COLOR）时自动退化成纯文本 —— 测试才逐字节可比。
-#   WTOOL_GGCP_COLOR=always|never 可以强制（测试用）。
+# 颜色：**只有自动两条** —— 设了 NO_COLOR 就不上色；否则 stdout 是 tty 才上色。
+# 没有"强制开关"这种变量（用户口径：不给用户加看不懂的旋钮）。
 _gr_color_on () {
-    case ${WTOOL_GGCP_COLOR:-} in
-        always) return 0 ;;
-        never)  return 1 ;;
-    esac
     [[ -n ${NO_COLOR:-} ]] && return 1
     [[ -t 1 ]]
 }
