@@ -59,7 +59,9 @@
 ## 3. 验证（改完必须跑）
 
 ```sh
-sh tests/run_tests.sh      # 77 条，应该全绿（以脚本最后打印的通过/失败数为准）
+sh tests/run_tests.sh      # 309 条，应该全绿（以脚本最后打印的通过/失败数为准；
+                           #   2026-10-09 实测 309 通过 0 失败 —— 这个数字常变，
+                           #   只有它**跑出来**的 PASS/FAIL 行算数，别手抄）
 ```
 
 - 三段：`my_repo.py`、`gerrit_query.py`、`env.zsh`/`env.bash` 对比（同一张用例表跑两个 shell）。
@@ -75,3 +77,33 @@ sh tests/run_tests.sh      # 77 条，应该全绿（以脚本最后打印的通
   `[[ -z $ZSH_VERSION ]] && return`，在 bash 里 source 时是**静默 no-op**；
   `env.bash` 那份没有这道门。README §7 已注明。
 - 提交只提交到 `ds_dev`，`git add` 之前先 `git diff` 看一遍；不 push、不动 `main`。
+
+## 4. 文档分工：README 是命令说明书，下载/进度/决策都不进 README
+
+> **这是所有 wtool 子项目的通用要求**（2026-10-09 用户口径，原话见用户级
+> `~/.dsh/AGENTS.md`）。本仓库照它执行，别的子项目也一样。
+
+- **README = 给用户看的命令说明书。** 主体必须是**这个仓提供哪些命令、各干什么、怎么执行**：
+  一句话用途 + 用法/参数 + 选项 + 退出码/典型输出 + 依赖的环境变量/配置。
+  用户读完 README 就该知道"有哪些命令是干什么的、怎么执行"。
+  **每条都要对着 `env.zsh` / `env.bash` 核过再写**（先
+  `grep -n '^[a-z_]* ()' env.zsh` 数一遍函数，再照着写）；核不实的宁可不写。
+- **下载的内容不写进 README** —— 放 `docs/download.md` 或 README 的**最后一节**，
+  README 里**只留一行链接**。理由：`download.md` 只是下载，README 是给用户看的说明书。
+  本仓库的下载页是 `docs/download.md`，README 末尾「下载」一节只留链接。
+- **⚠️ `docs/download.md` 是引擎生成的，不要手改它。** `wtool pack-release` 每次发布
+  重写一遍（`bootstrap/lib/wtool_fs.sh`、`bootstrap/lib/wtool_plan.py`），并登记进引擎的
+  `$WTOOL_STATE/generated.tsv`（**状态目录里的册子，不在本仓库里**）——
+  改它下次发布就被覆盖。要改下载页内容就改发布流程 / `scripts/release.json`，
+  不要改这个文件本身。同理 `scripts/release.json` 也是生成的。
+- **进度不写进 README，进 `BACKLOG.md`；决策不写进 README，进 `docs/adr/`。**
+  README 只写"现在有什么、怎么用"，不写"做到哪了、为什么这么定"。
+- **自检**：README 里出现的每个命令名，都要能在 `env.zsh` 或 `env.bash` 里
+  `grep` 到；找不到的要么删掉，要么在 README 里说明它来自别的仓。命令列表示例：
+
+  ```sh
+  grep -oP '^[A-Za-z_][A-Za-z_0-9]*\s*\(\)' env.zsh  | sed 's/\s*()//' | sort -u
+  grep -oP '^[A-Za-z_][A-Za-z_0-9]*\s*\(\)' env.bash | sed 's/\s*()//' | sort -u
+  # 两边应该给出同一批名字；README 里的命令名应当是它们的子集（`_` 开头的是内部函数，不写进 README）
+  ```
+

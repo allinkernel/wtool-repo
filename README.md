@@ -7,8 +7,12 @@
 （命令通过 `$WTOOL_PROJECT_DIR` 找到本目录下的两个 python 工具）。
 **zsh 和 bash 各一份**（`env.zsh` / `env.bash`，内容等价）：受众里有人机器上没有 zsh。
 
+**这份 README 是给用户看的命令说明书**：这个仓提供哪些命令、各干什么、怎么执行
+（每条都写了参数、选项、退出码和报错原文）。**下载的内容不在这里** ——
+见文末「下载」一节的链接。进度看 `BACKLOG.md`，决策看 `docs/adr/`。
+
 - 项目路径（**身份就是它**，ADR-0037）：`tools/git-repo-sh-tools`，`priority=40`
-- 本仓库没有 `scripts/`（不需要构建/安装脚本）
+- `scripts/` 里只有 `release.json`（发布账，**没有** build/install 脚本）
 
 > **改过名**（2026-10-04）：原来叫 `tools/repo`。项目身份就是路径，所以改名 =
 > 换身份 —— 清单里的 `path=`、中转链接、state 目录、rc 块名都跟着变了，
@@ -303,10 +307,28 @@ ggcp -n I1111…                              # 全跳过，只打表
 | `-n` / `--no` | 不再逐个问，全都跳过 |
 | `-h` / `--help` | 打用法 |
 
+#### 指定 patchset：只有 `1234/2` 和 `-p 2` 两种写法
+
 ⚠️ **指定 patchset 只有两种写法：`1234/2`（斜杠）和 `-p 2`**。
 **老写法 `ggcp 1234 1` 故意不支持** —— 第二个位置参数现在也是"一个编号"，
 所以 `ggcp 1234 1` 会被当成**编号 1234 和编号 1 两个补丁**（这正是"空格分隔多个编号"的代价，
 用户 2026-10-09 明确认可 `1234/2` 斜杠写法）。
+
+| 你想表达 | 写法 | 结果 |
+|---|---|---|
+| 编号 1234 的**第 2 个** patchset | `ggcp 1234/2` 或 `ggcp -p 2 1234` | 打 1234 的 ps2 |
+| 编号 1234 的当前 patchset | `ggcp 1234` | 打 1234 的 current |
+| 编号 1234 **和** 编号 1 两个补丁 | `ggcp 1234 1` | 打两个（**不是** ps1） |
+| 编号 1234 **和**编号 2 两个补丁 | `ggcp 1234,2` 或 `ggcp 1234 2` | 打两个（**不是** ps2） |
+| 这一批都用第 2 个 patchset | `ggcp -p 2 1 2 3` | 三个编号都打 ps2 |
+
+> 逗号**是编号分隔符**，不是 patchset 分隔符：`_gr_collect_args` 先按逗号把每个参数
+> 拆成多个编号，所以 `1234,2` 和 `1234 2` 一样都是**两个编号**。
+> （内部函数 `_gerrit_parse_change_arg` 单独调用时确实认 `1234,2` 为"编号+patchset"，
+> 但 `ggcp` 的公开入口永远先过逗号拆分 —— 所以**对用户只有斜杠和 `-p` 两种**。
+> `tests/run_tests.sh:525` 那条测的是内部函数，不代表 `ggcp 1234,2` 的公开行为。）
+>
+> 实测（2026-10-09，`_gr_collect_args 1234,2` → `1234|` `2|`；`1234/2` → `1234|2`）。
 
 **按 Change-Id 打**（`I` + 40 位十六进制）时，它先去 gerrit 查这个 Change-Id 的**所有提交**
 （同一个 Change-Id 可能横跨多个分支 / 多个 change，每个还有多个 patchset），打一张表，
@@ -340,17 +362,21 @@ ggcp -n I1111…                              # 全跳过，只打表
 8. `git cherry-pick <revision>`，**输出吞掉**；冲突时提示 `git cherry-pick --continue` / `--skip` / `--abort`。
 
 **正常路径只打这四行**（`git fetch` / `cherry-pick` 的原始输出一律不给用户看，
-只有失败时才把关键错误打到 stderr）：
+只有失败时才把关键错误打到 stderr）。前三行每个编号一定有，**第四行二者只出其一**：
 
 ```
-正在下载N          # N = gerrit 编号
-正在打补丁N
-打补丁成功          # 绿色
-打补丁失败          # 红色
+正在下载N          # N = gerrit 编号；一定有
+正在打补丁N          # 一定有
+打补丁成功          # 成功时这一行，绿色
+打补丁失败          # 失败时这一行（没有「打补丁成功」），红色
 ```
 
-有几个编号就有几组这样的行。颜色**只有自动两条，没有开关**：设了 `NO_COLOR` 就不上色；
-否则 **stdout 是 tty**（终端里）才上色，重定向/管道里自动退化成纯文本。
+也就是说：**成功一个编号 = 三行**（`正在下载N` / `正在打补丁N` / `打补丁成功`），
+**失败一个编号 = 三行**（末行换成 `打补丁失败`）。有几个编号就有几组这样的行
+（`ggcp 1 2` 成功时正好六行），行里的 `N` 是 gerrit 编号。
+颜色**只有自动两条，没有开关**：设了 `NO_COLOR` 就不上色；
+否则 **stdout 是 tty**（终端里）才上色，重定向/管道里自动退化成纯文本
+（`NO_COLOR` 优先于 tty：设了它，终端里也不上色）。
 一个编号失败不影响后面的编号继续打，但**整体退出码是 1**。
 
 #### `gchk <change>` —— 能不能推 main
@@ -515,7 +541,7 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 ## 测试
 
 ```sh
-sh tests/run_tests.sh      # 303 条（六段合计，以脚本最后打印的通过/失败数为准）
+sh tests/run_tests.sh      # 309 条（六段合计，以脚本最后打印的通过/失败数为准）
 ```
 
 测试分六段（都在临时目录里造"公司环境"的假工作区 / 假裸仓 / 假 gerrit，不碰真工作区、不连网）：
@@ -610,8 +636,21 @@ sh tests/run_tests.sh      # 303 条（六段合计，以脚本最后打印的�
 | `gerrit_query.py` | 解析 `gerrit query --format=JSON` 的输出（供 `ggcp` / `gchk` / `gq` 用）；
 动作：`patchset` / `commits`（一个 Change-Id 的每个 patchset 一行 TSV）/ `table`（把那些行打成对齐的表，`--path-map` 给"项目名→本地路径"）/ `check` / `list` / `raw` |
 | `tests/run_tests.sh` | 上面两个 python 工具的测试 + `env.zsh`/`env.bash` 的行为对比（含 `ggco` / `gpun` 的裸仓端到端） |
+| `scripts/release.json` | 发布账：这一版发了哪些资产（名字 / 字节数 / sha256）——**wtool 生成**，`download-release` 按它校验 |
+| `docs/download.md` | 给用户看的下载页（这版发了什么、直链在哪）——**wtool 生成**，别手改（见文末「下载」） |
 | `architecture.md` | 代码现在长什么样（现状，只写现状） |
 | `BACKLOG.md` | 这个项目"接下来做什么、做到哪了" |
 
 > 老版本 README 里"安装"一节写的是叫用户自己 `wtool install`；
 > 现在安装口径统一收到 wtool 的 README（本仓库不再讲怎么装）。
+
+## 下载
+
+**下载的内容单独一篇：[`docs/download.md`](docs/download.md)** ——
+上面那些直链、这一版发了什么、只有浏览器的机器怎么下，全在那里面，
+这份 README 不复述（命令说明书和下载页分开）。
+
+> ⚠️ `docs/download.md` 是 **wtool 生成的**（`wtool pack-release` 每次发布写一遍，
+> 见 `bootstrap/wtool.sh` 的 pack-release 与 `bootstrap/docs/spec.md` §生成物清单），
+> **不要手改它** —— 改了下次发布会被覆盖。
+> 它的内容来自 `scripts/release.json` 和发布账，要改就改发布流程。
