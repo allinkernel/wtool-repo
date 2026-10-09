@@ -2,11 +2,11 @@
   "schema": 1,
   "project": "tools/git-repo-sh-tools",
   "repo": "allinkernel/wtool-repo",
-  "tag": "ds_dev-2026-10-07",
-  "base_url": "https://github.com/allinkernel/wtool-repo/releases/download/ds_dev-2026-10-07",
-  "commit": "9734cbff035a2e1ddee1263f1aaa98b146bbe2a7",
-  "packed_at": "2026-10-08T01:05:07+0800",
-  "published_at": "2026-10-08T01:07:15+08:00",
+  "tag": "ds_dev-2026-10-09",
+  "base_url": "https://github.com/allinkernel/wtool-repo/releases/download/ds_dev-2026-10-09",
+  "commit": "6c416abfdd00cba2e48b9e965bd0f6cd32cd0dab",
+  "packed_at": "2026-10-09T15:32:05+0800",
+  "published_at": "2026-10-09T15:35:26+08:00",
   "wtool_engine": "1.0.0",
   "dirty": false,
   "volume_size": "32M",
@@ -20,33 +20,21 @@
     {
       "name": "dist.json",
       "role": "",
-      "bytes": 927,
-      "sha256": "d7b7ce263d6a809344e34378a922c7b320885488d1b5eac54e43b8259b14c5c4"
+      "bytes": 862,
+      "sha256": "5d4622fc85860c9e78f5c7b494930c09dc257046fbb72f8817f5543aedbbc490"
     },
     {
-      "name": "release-hash.txt",
-      "role": "",
-      "bytes": 78,
-      "sha256": "3749e131bbad61d9fa6323ee7f7cbb76ef89b9d4c0e206b50942fc5cfb8bd31b"
-    },
-    {
-      "name": "release.zip",
-      "role": "release",
-      "bytes": 18738,
-      "sha256": "22e3a921ac77e6f2e6604a321526fc46d6e3b4a0c29ae1f32a58d987919b97ff"
-    },
-    {
-      "name": "源码-hash.txt",
+      "name": "source-hash.txt",
       "role": "",
       "bytes": 77,
-      "sha256": "bd4582f8b03b7731b0c8398975b463dd69b36cd0d462d79404b12cf9300b1250"
+      "sha256": "43dd7e5a040acb1c509be41ac7b1bade756fd788da05098c1aa31fdc2adf0c6d"
     },
     {
-      "name": "源码.zip",
+      "name": "source.zip",
       "role": "source",
-      "bytes": 54323,
-      "sha256": "19088295e65ced9608d4c3133b40d52f9a771e8d47ca76fae8b4860c9d8d8ff9"
+      "bytes": 93612,
+      "sha256": "f1b61941af23b17c815e3e7566416f688790068d4886dfae839f64988cb16e36"
     }
   ],
-  "how": "wtool download-release tools/git-repo-sh-tools   # 下到项目的 __release/（按本文件的 sha256 校验）\nwtool unpack-release tools/git-repo-sh-tools     # 拼分卷 + 解到 __output/\nwtool install tools/git-repo-sh-tools            # 装到本机"
+  "how": "wtool download-release tools/git-repo-sh-tools   # 下到项目的 __release/（按本文件的 sha256 校验）\nwtool unpack-release tools/git-repo-sh-tools     # 拼分卷 + 把源码铺回项目目录\nwtool install tools/git-repo-sh-tools            # 装到本机"
 }
