@@ -373,7 +373,7 @@ _cdd_dots_up () {
 cdd () {
     if [[ $# -ne 1 ]]; then
         echo "Usage: cdd TARGET" >&2
-        echo "  TARGET 可以是：清单里的项目名（allinkernel/wtool.git 也行）、" >&2
+        echo "  TARGET 可以是：清单里的项目名（allinkernel/wtool-doc.git 也行）、" >&2
         echo "                 相对 repo 根或当前目录的路径、现存的文件/目录、" >&2
         echo "                 或者 gerrit 提交编号（去 gerrit 查它属于哪个仓库）" >&2
         echo "                 或者一串点（.. / ... / ....，往上跳\"点数-1\"层）" >&2

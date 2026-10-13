@@ -344,7 +344,7 @@ _cdd_dots_up () {
 cdd () {
     if [ $# -ne 1 ]; then
         printf 'Usage: cdd TARGET\n' >&2
-        printf '  TARGET 可以是：清单里的项目名（allinkernel/wtool.git 也行）、\n' >&2
+        printf '  TARGET 可以是：清单里的项目名（allinkernel/wtool-doc.git 也行）、\n' >&2
         printf '                 相对 repo 根或当前目录的路径、现存的文件/目录、\n' >&2
         printf '                 或者 gerrit 提交编号（去 gerrit 查它属于哪个仓库）\n' >&2
         printf '                 或者一串点（.. / ... / ....，往上跳"点数-1"层）\n' >&2

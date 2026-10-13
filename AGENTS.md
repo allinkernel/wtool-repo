@@ -13,7 +13,7 @@
   改了命令、参数、报错文字、退出码、环境变量、gerrit 服务器查找顺序、`my_repo.py` /
   `gerrit_query.py` 的动作或输出列，都要回到 README 对应那一行改。
 - **README 里不写"怎么装"** —— 安装统一由 wtool 管，README 的「安装」一节只有一句话
-  加一个链接，指向 GitHub 上的 wtool README（`allinkernel/wtool` 仓库的 `README.md`）。
+  加一个链接，指向 GitHub 上的 wtool README（`allinkernel/wtool-doc` 仓库的 `README.md`）。
   项目自己的 `install.sh` / `uninstall.sh` 已经退休，**别把它们写进文档**，
   也别在文档里叫用户直接跑。
 - **README 的章节结构**（改动时保持这个骨架，别自创一套）：
