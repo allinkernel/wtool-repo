@@ -36,8 +36,8 @@
       "sha256": "f1b61941af23b17c815e3e7566416f688790068d4886dfae839f64988cb16e36"
     }
   ],
-  "how": "wtool download-release tools/git-repo-sh-tools   # 下到项目的 __release/（按本文件的 sha256 校验）\nwtool unpack-release tools/git-repo-sh-tools     # 拼分卷 + 把源码铺回项目目录\nwtool install tools/git-repo-sh-tools            # 装到本机\n\n# 断网机（没有 wtool，也不联网）：从离线 tag offline-<日期> 的发布页人工下载\nunzip source-offline.zip && cp -a wtool/. \"$WTOOL_HOME/wtool/\"   # ① 源码即产物\nwtool install tools/git-repo-sh-tools            # 东西都在包里，不联网",
-  "offlineTag": "",
+  "how": "wtool download-release tools/git-repo-sh-tools   # 下到项目的 __release/（按本文件的 sha256 校验）\nwtool unpack-release tools/git-repo-sh-tools     # 拼分卷 + 把源码铺回项目目录\nwtool install tools/git-repo-sh-tools            # 装到本机\n\n# 断网机（没有 wtool，也不联网）：从离线 tag offline-2026-10-14 的发布页人工下载\nunzip source-offline.zip && cp -a wtool/. \"$WTOOL_HOME/wtool/\"   # ① 源码即产物\nwtool install tools/git-repo-sh-tools            # 东西都在包里，不联网",
+  "offlineTag": "offline-2026-10-14",
   "artifacts": {
     "source-offline.zip": [
       {
