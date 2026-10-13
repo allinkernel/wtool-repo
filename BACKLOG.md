@@ -7,6 +7,16 @@
 
 ---
 
+## ✅ 改名：安装器 `bootstrap` → `wtool-base-tools`、文档仓 `wtool-base` → `wtool-doc`、纯配置项目 `shell/zsh` → `shell/shell-rc`（ADR-0045 §7.1，2026-10-13）
+
+本仓只是引用方：文档/注释里指向这几个项目的路径与仓名全部跟着改
+（`bootstrap/{lib,scripts,tests,...}` → `wtool-base-tools/…`、
+`wtool-base/README.md` → `wtool-doc/README.md`、`allinkernel/wtool` → `allinkernel/wtool-doc`、
+`shell/zsh` → `shell/shell-rc`）。
+`wtool bootstrap` / `wtool sudo-bootstrap` 是**引擎命令名**，本轮不改，保留。
+
+⚠️ 本地目录改名 + `wtool move` 属于一次性切换（会改用户真账本），本轮没做。
+
 ## ✅ `cdd` 的点参数（`..` / `...` / `....` …）加回来 —— 做完（2026-10-09）
 
 **用户要求（原话）**："cdd 命令，可以跟 `....` 这种参数，功能相当于 zsh 的 `cd ...`。
@@ -66,7 +76,7 @@ mytool 副本里**没有**这段 —— `~/source/mytool/android/wsw_env.sh:264`
   留档 `/tmp/cdd-demo.txt`（`script -qec` 起真 pty；含 `pwd` → `cdd ...` → `pwd` →
   `cdd ....` → `pwd`、8 个点、12 个点停在 `/`、`cdd ..x` 报错，
   以及 zsh 原生 7 个点报错 / bash 原生 `cd ..` 报错的对照）；
-- **`pwd` 被覆盖过的情形**（`shell/zsh` 里 `pwd` 是自定义函数，zsh / bash 两份都有）：
+- **`pwd` 被覆盖过的情形**（`shell/shell-rc` 里 `pwd` 是自定义函数，zsh / bash 两份都有）：
   `cdd` **只读 `$PWD`、函数体里一次都没调 `pwd`**（demo 里 `grep -c pwd` = 0），
   所以它不会把 `pwd` 那份 tee 记录弄乱；跳完再敲 `pwd` 记录自然就更新了。
 
@@ -83,7 +93,7 @@ sed -n '1,40p' /tmp/cdd-demo.txt                                   # 真机演�
 - `cdd_path` 不支持点参数（没要求；它不 cd）；
 - 容器里没跑（`wtool.xml` 没动，装出来的还是"两份 rc 文件"，与上次一样）；
 - 没有补全；点参数只吃**一个**参数 —— `cdd .. ..` 还是 `argv 个数 ≠ 1` → `Usage` + 退出码 2（没改）；
-- 这次**没动**别的仓（`bootstrap` / `harness` / `wtool-base` 正被别的代理改）。
+- 这次**没动**别的仓（`wtool-base-tools` / `harness` / `wtool-doc` 正被别的代理改）。
 
 ---
 

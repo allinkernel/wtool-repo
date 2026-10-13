@@ -93,7 +93,7 @@ sh tests/run_tests.sh      # 335 条，应该全绿（以脚本最后打印的�
   README 里**只留一行链接**。理由：`download.md` 只是下载，README 是给用户看的说明书。
   本仓库的下载页是 `docs/download.md`，README 末尾「下载」一节只留链接。
 - **⚠️ `docs/download.md` 是引擎生成的，不要手改它。** `wtool pack-release` 每次发布
-  重写一遍（`bootstrap/lib/wtool_fs.sh`、`bootstrap/lib/wtool_plan.py`），并登记进引擎的
+  重写一遍（`wtool-base-tools/lib/wtool_fs.sh`、`wtool-base-tools/lib/wtool_plan.py`），并登记进引擎的
   `$WTOOL_STATE/generated.tsv`（**状态目录里的册子，不在本仓库里**）——
   改它下次发布就被覆盖。要改下载页内容就改发布流程 / `scripts/release.json`，
   不要改这个文件本身。同理 `scripts/release.json` 也是生成的。

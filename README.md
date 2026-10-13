@@ -494,7 +494,7 @@ wninja -C out build_image
 
 ## 安装（由 wtool 统一管）
 
-安装由 wtool 统一管：见 [wtool 的 README（GitHub：allinkernel/wtool）](https://github.com/allinkernel/wtool/blob/main/README.md) —— 本仓库只是源码/配置，
+安装由 wtool 统一管：见 [wtool 的 README（GitHub：allinkernel/wtool）](https://github.com/allinkernel/wtool-doc/blob/main/README.md) —— 本仓库只是源码/配置，
 装的时候是 `wtool install tools/git-repo-sh-tools`（**项目路径就是它的身份** —— 没有单独的 id，见 ADR-0037）。
 
 > ⚠️ **wtool 的项目只在容器里装 / 测**（用户级规矩，2026-10-04）：本机（WSL）是临时
@@ -521,7 +521,7 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 ## 快捷键
 
 本仓库**不定义任何快捷键 / key binding / 补全**（env 文件里没有 `bindkey`、`bind -x`、`complete`）。
-补全由别的项目提供：wtool 自己的命令补全挂在 `bootstrap` 项目的 env 上
+补全由别的项目提供：wtool 自己的命令补全挂在 `wtool-base-tools` 项目的 env 上
 （`completion/wtool.zsh` / `completion/wtool.bash`）。
 
 ## 排错
@@ -681,6 +681,6 @@ sh tests/run_tests.sh      # 335 条（六段合计，以脚本最后打印的�
 这份 README 不复述（命令说明书和下载页分开）。
 
 > ⚠️ `docs/download.md` 是 **wtool 生成的**（`wtool pack-release` 每次发布写一遍，
-> 见 `bootstrap/wtool.sh` 的 pack-release 与 `bootstrap/docs/spec.md` §生成物清单），
+> 见 `wtool-base-tools/wtool.sh` 的 pack-release 与 `wtool-base-tools/docs/spec.md` §生成物清单），
 > **不要手改它** —— 改了下次发布会被覆盖。
 > 它的内容来自 `scripts/release.json` 和发布账，要改就改发布流程。
