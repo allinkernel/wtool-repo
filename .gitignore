@@ -7,3 +7,7 @@
 /__output/
 /__release/
 /__layer/
+
+# Python 字节码（tests 用 importlib 加载 gerrit_query.py 会生成）
+__pycache__/
+*.pyc

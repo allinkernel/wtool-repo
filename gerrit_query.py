@@ -24,6 +24,11 @@
         --path-map 给的是 "项目名<TAB>本地路径" 两列（zsh 那边算出来的），
         没给的列留空。CJK 按两个字符宽度对齐。
 
+    gerrit_query.py result-table                 （stdin：ggcp 的结果 TSV）
+        把 ggcp 的执行结果打成一张对齐的表：
+        项目名 / 项目路径 / 提交 id / patchset / 结果说明。
+        每行 5 列，列之间用 TAB；CJK 按两个字符宽度对齐。
+
     gerrit query ... | gerrit_query.py check [<change>]
         输出人类可读的状态/投票摘要；退出码 0 = 已 merged 且有 +2，
         1 = 还没 merged / 还没 +2，2 = 参数或数据有问题。
@@ -171,6 +176,7 @@ def cmd_commits(changes):
 
 # ------------------------------------------------------------------ 表格
 TABLE_COLS = ("编号", "patchset", "仓库", "路径", "提交链接")
+RESULT_COLS = ("项目名", "项目路径", "提交 id", "patchset", "结果说明")
 
 
 def disp_width(s):
@@ -224,6 +230,38 @@ def cmd_table(stream, path_map):
     out.write("  ".join("-" * widths[i] for i in range(len(TABLE_COLS))) + "\n")
     for r in rows:
         out.write("  ".join(pad(r[i], widths[i]) for i in range(len(TABLE_COLS))).rstrip() + "\n")
+    return 0
+
+
+def cmd_result_table(stream):
+    """stdin = ggcp 的 5 列结果 TSV；打一张对齐的表。
+
+    列固定为：项目名 / 项目路径 / 提交 id / patchset / 结果说明。
+    行序就是 stdin 的顺序 —— ggcp 那边已经按仓库聚拢好了，这里不再排序。
+    """
+    rows = []
+    for line in stream:
+        line = line.rstrip("\n")
+        if not line.strip():
+            continue
+        f = line.split("\t")
+        if len(f) < len(RESULT_COLS):
+            return die("结果表每行要 %d 列（TAB 分隔），这行只有 %d 列：%s"
+                       % (len(RESULT_COLS), len(f), line[:80]), 2)
+        rows.append(f[:len(RESULT_COLS)])
+    if not rows:
+        return die("结果表没有数据（ggcp 一行结果都没生成）", 1)
+
+    widths = [disp_width(c) for c in RESULT_COLS]
+    for r in rows:
+        for i in range(len(RESULT_COLS)):
+            widths[i] = max(widths[i], disp_width(r[i]))
+
+    out = sys.stdout
+    out.write("  ".join(pad(c, widths[i]) for i, c in enumerate(RESULT_COLS)).rstrip() + "\n")
+    out.write("  ".join("-" * widths[i] for i in range(len(RESULT_COLS))) + "\n")
+    for r in rows:
+        out.write("  ".join(pad(r[i], widths[i]) for i in range(len(RESULT_COLS))).rstrip() + "\n")
     return 0
 
 
@@ -281,6 +319,11 @@ def main(argv):
         return die("用法: gerrit_query.py {patchset|commits|table|check|list|raw} [...]", 2)
     action = argv[1]
     rest = argv[2:]
+
+    if action == "result-table":
+        if rest:
+            return die("result-table 不接受参数（结果从 stdin 读）", 2)
+        return cmd_result_table(sys.stdin)
 
     if action == "table":
         path_map = None

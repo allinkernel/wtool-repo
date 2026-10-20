@@ -241,6 +241,43 @@ else
     ok "坏输入：报错且退出码非 0"
 fi
 
+echo "== gerrit_query.py：result-table（ggcp 的结果表，CJK 对齐）=="
+RT_INPUT=$(printf 'platform/mylib\tmylib\tdeadbeefcafe\t1\t成功\n平台/中文仓库\t中文路径\tcafebabe1234\t2\tabc.txt 文件冲突\n-\t-\t-\t-\t查询失败：查不到\n')
+RT=$(printf '%s' "$RT_INPUT" | python3 $G result-table)
+chk "result-table 行数（表头 + 分隔线 + 3 行）" \
+    "$(printf '%s\n' "$RT" | wc -l | tr -d ' ')" "5"
+case $(printf '%s\n' "$RT" | head -1) in
+    *项目名*项目路径*提交*id*patchset*结果说明*) ok "result-table 表头 5 列都在" ;;
+    *) bad "result-table 表头不对：$(printf '%s\n' "$RT" | head -1)" ;;
+esac
+case $(printf '%s\n' "$RT" | sed -n 3p) in
+    *platform/mylib*成功*) ok "result-table 第一行是提交结果" ;;
+    *) bad "result-table 第一行不对：$(printf '%s\n' "$RT" | sed -n 3p)" ;;
+esac
+if python3 - "$G" <<'PY' 2>/dev/null
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("gq", sys.argv[1])
+gq = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gq)
+# CJK 全角按 2 列：这是表格对齐的唯一依赖
+assert gq.disp_width("项目名") == 6
+assert gq.disp_width("中a") == 3
+assert gq.disp_width("abc") == 3
+# pad 只补空格，且补到指定显示宽度
+assert gq.pad("中", 4) == "中  "
+assert gq.pad("abc", 3) == "abc"
+PY
+then
+    ok "result-table 中文宽度：全角按 2 列、pad 补齐"
+else
+    bad "result-table 中文宽度没对齐"
+fi
+if printf 'x\n' | python3 $G result-table >/dev/null 2>&1; then
+    bad "result-table 坏输入应该失败"
+else
+    ok "result-table 坏输入：退出码非 0"
+fi
+
 # ---------------------------------------------------------------------------
 # ggco 的夹具：本地裸仓 + 一个 clone（fetch -> checkout，端到端，不联网）
 # ---------------------------------------------------------------------------
@@ -287,6 +324,7 @@ GGCP_ROOT="$T/ggcp"
 GGCP_BARE="$GGCP_ROOT/remote/proj.git"
 GGCP_WS="$GGCP_ROOT/ws"
 GGCP_WORK="$GGCP_WS/mylib"
+GGCP_OTHER="$GGCP_WS/other"
 GGCP_JSON="$GGCP_ROOT/json"
 GGCP_BASE_SHA=""
 if command -v git >/dev/null 2>&1; then
@@ -321,15 +359,42 @@ if command -v git >/dev/null 2>&1; then
         git add -A
         git commit -qm 'lab: change two'
         TWO=$(git rev-parse HEAD)
-        # 把三个"patchset 提交"推到"gerrit 服务器"（本地裸仓）上
+        # 四笔跨两个仓库的补丁：101/102 是同一个文件的两步（顺序反了会冲突），
+        # 103/104 在另一个仓库里做同样的事 —— 用来钉"同仓库串行、不同仓库并行"。
+        git reset -q --hard "$BASE"
+        printf 'a1\n' > a.txt
+        git add -A
+        git commit -qm 'lab: A1'
+        A1=$(git rev-parse HEAD)
+        printf 'a2\n' >> a.txt
+        git add -A
+        git commit -qm 'lab: A2'
+        A2=$(git rev-parse HEAD)
+        git reset -q --hard "$BASE"
+        printf 'b1\n' > b.txt
+        git add -A
+        git commit -qm 'lab: B1'
+        B1=$(git rev-parse HEAD)
+        printf 'b2\n' >> b.txt
+        git add -A
+        git commit -qm 'lab: B2'
+        B2=$(git rev-parse HEAD)
+        # 把"gerrit 服务器"（本地裸仓）上的 ref 都推上去
         git push -q origin "$BASE":refs/heads/main
         git push -q origin \
             "$PS1":refs/changes/01/1/1 \
             "$PS2":refs/changes/01/1/2 \
-            "$TWO":refs/changes/02/2/1
-        printf '%s %s %s %s\n' "$BASE" "$PS1" "$PS2" "$TWO" > "$GGCP_ROOT/shas"
+            "$TWO":refs/changes/02/2/1 \
+            "$A1":refs/changes/01/101/1 \
+            "$A2":refs/changes/02/102/1 \
+            "$B1":refs/changes/03/103/1 \
+            "$B2":refs/changes/04/104/1
+        printf '%s %s %s %s %s %s %s %s\n' \
+            "$BASE" "$PS1" "$PS2" "$TWO" "$A1" "$A2" "$B1" "$B2" > "$GGCP_ROOT/shas"
+        git -C "$GGCP_BARE" symbolic-ref HEAD refs/heads/main
     )
-    read -r GGCP_BASE_SHA GGCP_PS1_SHA GGCP_PS2_SHA GGCP_TWO_SHA < "$GGCP_ROOT/shas"
+    read -r GGCP_BASE_SHA GGCP_PS1_SHA GGCP_PS2_SHA GGCP_TWO_SHA \
+        GGCP_A1_SHA GGCP_A2_SHA GGCP_B1_SHA GGCP_B2_SHA < "$GGCP_ROOT/shas"
 
     # 工作区：清单 + client.conf + 项目目录（真 git 仓，remote 叫 polygerrit）
     cat > "$GGCP_WS/.repo/manifests/default.xml" <<'X'
@@ -338,6 +403,7 @@ if command -v git >/dev/null 2>&1; then
     <remote name="polygerrit" fetch="ssh://t@127.0.0.1:29418/" />
     <default revision="main" remote="polygerrit" />
     <project path="mylib" name="platform/mylib" />
+    <project path="other" name="platform/other" />
     <project path="device/emui/generic_a15" name="device/emui/generic_a15" />
     <project path="gone/project" name="gone/project" />
 </manifest>
@@ -357,6 +423,12 @@ X
     git -C "$GGCP_WORK" commit -qm base
     git -C "$GGCP_WORK" branch -M ds_dev
     git -C "$GGCP_WORK" remote add polygerrit "$GGCP_BARE"
+    # 第二个仓库：从同一个裸仓 clone（这样 base 的 SHA 和 mylib 完全一样）
+    git clone -q "$GGCP_BARE" "$GGCP_OTHER" 2>/dev/null
+    git -C "$GGCP_OTHER" config user.name t
+    git -C "$GGCP_OTHER" config user.email t@t
+    git -C "$GGCP_OTHER" checkout -q -B ds_dev "$GGCP_BASE_SHA" 2>/dev/null || true
+    git -C "$GGCP_OTHER" remote add polygerrit "$GGCP_BARE"
 
     # 桩 _gerrit_ssh 喂的 JSON（最后一行是 gerrit 固定的 stats）
     _stats='{"type":"stats","rowCount":1,"runTimeMilliseconds":1,"moreChanges":false}'
@@ -367,6 +439,23 @@ $_stats
 X
     cat > "$GGCP_JSON/change-2.json" <<X
 {"number":2,"project":"platform/mylib","branch":"main","subject":"lab: change two","url":"http://g.example.com/c/platform/mylib/+/2","currentPatchSet":{"number":1,"revision":"$GGCP_TWO_SHA","ref":"refs/changes/02/2/1"},"patchSets":[{"number":1,"revision":"$GGCP_TWO_SHA","ref":"refs/changes/02/2/1"}]}
+$_stats
+X
+    # 四笔跨两个仓库的补丁（101/102 -> mylib，103/104 -> other）
+    cat > "$GGCP_JSON/change-101.json" <<X
+{"number":101,"project":"platform/mylib","branch":"main","subject":"lab: A1","url":"http://g.example.com/c/platform/mylib/+/101","currentPatchSet":{"number":1,"revision":"$GGCP_A1_SHA","ref":"refs/changes/01/101/1"},"patchSets":[{"number":1,"revision":"$GGCP_A1_SHA","ref":"refs/changes/01/101/1"}]}
+$_stats
+X
+    cat > "$GGCP_JSON/change-102.json" <<X
+{"number":102,"project":"platform/mylib","branch":"main","subject":"lab: A2","url":"http://g.example.com/c/platform/mylib/+/102","currentPatchSet":{"number":1,"revision":"$GGCP_A2_SHA","ref":"refs/changes/02/102/1"},"patchSets":[{"number":1,"revision":"$GGCP_A2_SHA","ref":"refs/changes/02/102/1"}]}
+$_stats
+X
+    cat > "$GGCP_JSON/change-103.json" <<X
+{"number":103,"project":"platform/other","branch":"main","subject":"lab: B1","url":"http://g.example.com/c/platform/other/+/103","currentPatchSet":{"number":1,"revision":"$GGCP_B1_SHA","ref":"refs/changes/03/103/1"},"patchSets":[{"number":1,"revision":"$GGCP_B1_SHA","ref":"refs/changes/03/103/1"}]}
+$_stats
+X
+    cat > "$GGCP_JSON/change-104.json" <<X
+{"number":104,"project":"platform/other","branch":"main","subject":"lab: B2","url":"http://g.example.com/c/platform/other/+/104","currentPatchSet":{"number":1,"revision":"$GGCP_B2_SHA","ref":"refs/changes/04/104/1"},"patchSets":[{"number":1,"revision":"$GGCP_B2_SHA","ref":"refs/changes/04/104/1"}]}
 $_stats
 X
     # cdd <编号> 的三个假 change
@@ -387,20 +476,47 @@ _gerrit_ssh () {
     case \${c#change:} in
         1)    cat "$GGCP_JSON/change-1.json" ;;
         2)    cat "$GGCP_JSON/change-2.json" ;;
+        101|102|103|104)
+            # 只有测试显式设了 GR_QUERY_LOG 才记日志/延迟（平时查询不拖时间）
+            if [ -n "\${GR_QUERY_LOG:-}" ]; then
+                printf 'start %s\n' "\${c#change:}" >> "\$GR_QUERY_LOG"
+                sleep 0.2
+                printf 'end %s\n' "\${c#change:}" >> "\$GR_QUERY_LOG"
+            fi
+            cat "$GGCP_JSON/change-\${c#change:}.json" ;;
         I1111111111111111111111111111111111111111) cat "$GGCP_JSON/change-1.json" ;;
         9001|9002|9003) cat "$GGCP_JSON/cdd-\${c#change:}.json" ;;
         *)    cat "$GGCP_JSON/empty.json" ;;
     esac
 }
 X
+        # 测试用的 git 包装：只记录 cherry-pick 的开始/结束（用来钉"同仓库串行、
+    # 不同仓库并行"），其它命令原样转给真 git。
+    cat > "$GGCP_ROOT/gitwrap.sh" <<'X'
+git () {
+    case "$1" in
+      cherry-pick)
+        printf 'start-cherry\t%s\n' "$PWD" >> "$GR_CHERRY_LOG"
+        sleep 0.2
+        command git "$@"; rc=$?
+        printf 'end-cherry\t%s\n' "$PWD" >> "$GR_CHERRY_LOG"
+        return $rc ;;
+      *) command git "$@" ;;
+    esac
+}
+X
+
     GGCP_OK=1
 fi
 
 # 每条用例都从同一个起点开始：detached 回到 base，并且清掉上一次的现场
 ggcp_reset () {
-    git -C "$GGCP_WORK" cherry-pick --abort >/dev/null 2>&1 || true
-    git -C "$GGCP_WORK" checkout -q -f "$GGCP_BASE_SHA" 2>/dev/null || true
-    git -C "$GGCP_WORK" clean -qfd
+    for d in "$GGCP_WORK" "$GGCP_OTHER"; do
+        [ -d "$d/.git" ] || continue
+        git -C "$d" cherry-pick --abort >/dev/null 2>&1 || true
+        git -C "$d" checkout -q -f "$GGCP_BASE_SHA" 2>/dev/null || true
+        git -C "$d" clean -qfd
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -540,6 +656,14 @@ EOF
     chk "cdd ... ：上两级（夹具里那个真叫 ... 的目录不抢）" "$out" "$WS"
     srun 'cdd .... >/dev/null 2>&1 && pwd'
     chk "cdd .... ：上三级" "$out" "$T"
+
+    # 用户点名要的 2～7 个点都过一遍（8 个点那条专门钉"不限 6 个点"）
+    srun "cd '$DOT_DEEP' && cdd ..... >/dev/null 2>&1 && pwd"
+    chk "cdd 5 个点：往上 4 层" "$out" "$DOT_ROOT/l1/l2/l3/l4"
+    srun "cd '$DOT_DEEP' && cdd ...... >/dev/null 2>&1 && pwd"
+    chk "cdd 6 个点：往上 5 层" "$out" "$DOT_ROOT/l1/l2/l3"
+    srun "cd '$DOT_DEEP' && cdd ....... >/dev/null 2>&1 && pwd"
+    chk "cdd 7 个点：往上 6 层" "$out" "$DOT_ROOT/l1/l2"
 
     # 超过 6 个点：8 个点 = 往上 7 层。zsh 原生（oh-my-zsh 的 global alias）只到 6 个点，
     # 这条就是盯着"我们不限点数"这个差异的。
@@ -706,20 +830,40 @@ EOF
     else
         echo "== env.$SHELL_NAME：ggcp（桩 gerrit + 本地裸仓，不联网）=="
 
+        # ---- 单笔：总述 + 一张只有一行的表（也是表格，不再有五行叙述）----
         ggcp_reset
         srun "source $GGCP_ROOT/stub.sh
             cd $GGCP_WORK
             ggcp 1"
         chk "ggcp 1：退出码 0" "$rc" "0"
-        chk "ggcp 1：正常路径只打三行（正在下载/正在打补丁/打补丁成功）" \
-            "$out" "正在下载1
-正在打补丁1
-打补丁成功"
+        chk "ggcp 1：正好 4 行（总述 + 表头 + 分隔线 + 一行结果）" \
+            "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "4"
+        chk "ggcp 1：总述行" \
+            "$(printf '%s\n' "$out" | sed -n 1p)" "1 个仓库 / 1 笔提交 / 成功 1 / 失败 0"
+        case $(printf '%s\n' "$out" | sed -n 2p) in
+            *项目名*项目路径*提交*id*patchset*结果说明*) ok "ggcp 1：表头 5 列都在" ;;
+            *) bad "ggcp 1 表头不对：$(printf '%s\n' "$out" | sed -n 2p)" ;;
+        esac
+        case $(printf '%s\n' "$out" | sed -n 4p) in
+            *platform/mylib*mylib*1*成功*) ok "ggcp 1：结果行带项目名/路径/patchset/成功" ;;
+            *) bad "ggcp 1 结果行不对：$(printf '%s\n' "$out" | sed -n 4p)" ;;
+        esac
         chk "ggcp 1：真的 cherry-pick 上来了" \
             "$(git -C "$GGCP_WORK" log --oneline -1 --format=%s)" "lab: change one (ps1)"
         chk "ggcp 1：新文件在" "$(cat "$GGCP_WORK/ps1.txt" 2>/dev/null)" "ps1"
 
-        # 同一个命令放到真 pty 里跑：成功那行必须**带 ANSI 色码**（上面管道里那条是纯文本）
+        # ---- 指定 patchset：1234/2 写法，表里的 patchset 列必须是 2 ----
+        ggcp_reset
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggcp 1/2"
+        chk "ggcp 1/2：退出码 0" "$rc" "0"
+        chk "ggcp 1/2：表里 patchset 列是 2" \
+            "$(printf '%s\n' "$out" | grep '^platform/mylib' | grep -c '  2  ')" "1"
+        chk "ggcp 1/2：ps2 文件在" "$(cat "$GGCP_WORK/ps2.txt" 2>/dev/null)" "ps2"
+        ggcp_reset
+
+        # 真 pty：表格不带 ANSI 色码（颜色码会破坏中文对齐）
         if command -v script >/dev/null 2>&1; then
             ggcp_reset
             pty_eval "source $GGCP_ROOT/stub.sh
@@ -727,70 +871,95 @@ EOF
                 ggcp 1"
             chk "真 pty 里 ggcp 1：退出码 0" "$rc" "0"
             case $out in
-                *"$ESC[32m打补丁成功$ESC[0m"*) ok "真 pty 里 ggcp 的成功行带绿色码" ;;
-                *) bad "真 pty 里 ggcp 没上色：[$out]" ;;
+                *"$ESC"*) bad "真 pty 里 ggcp 的表格不该带 ANSI 色码：[$out]" ;;
+                *) ok "真 pty 里 ggcp 的表格不带 ANSI 色码（对齐不会被破坏）" ;;
+            esac
+            case $out in
+                *项目名*结果说明*) ok "真 pty 里表格照样打出来" ;;
+                *) bad "真 pty 里没打出表格：[$out]" ;;
             esac
             ggcp_reset
         fi
 
-        # 多编号 + 链接 + 混用：一次打三个（ps1 那个已经打过了，所以再来一次会红）
+        # ---- 多笔同仓库：一行一个提交，成功 2 ----
         ggcp_reset
         srun "source $GGCP_ROOT/stub.sh
             cd $GGCP_WORK
             ggcp 1 2"
         chk "ggcp 1 2（空格分隔）：退出码 0" "$rc" "0"
-        case $out in
-            *"正在下载1
-正在打补丁1
-打补丁成功
-正在下载2
-正在打补丁2
-打补丁成功"*) ok "ggcp 1 2：两段各三行，顺序对" ;;
-            *) bad "ggcp 1 2 的输出不对：[$out]" ;;
-        esac
+        chk "ggcp 1 2：总述 1 个仓库 / 2 笔提交 / 成功 2" \
+            "$(printf '%s\n' "$out" | sed -n 1p)" "1 个仓库 / 2 笔提交 / 成功 2 / 失败 0"
+        chk "ggcp 1 2：表里两行（都指向 mylib）" \
+            "$(printf '%s\n' "$out" | grep -c '^platform/mylib')" "2"
         chk "ggcp 1 2：两个补丁都进来了" \
             "$(git -C "$GGCP_WORK" log --oneline --format=%s | head -2 | tr '\n' '/')" \
             "lab: change two/lab: change one (ps1)/"
 
-        # 打第二遍：同一份补丁再来一次 -> 空提交 -> 红
+        # ---- 重复打：空提交 -> 本地已有；失败后工作树必须干净 ----
         srun "source $GGCP_ROOT/stub.sh
             cd $GGCP_WORK
             ggcp 1"
         chk "重复打同一个补丁：退出码 1" "$rc" "1"
-        chk "重复打：有且只有一行红的「打补丁失败」" \
-            "$(printf '%s\n' "$out" | grep -c '^打补丁失败$')" "1"
+        chk "重复打：总述失败 1" \
+            "$(printf '%s\n' "$out" | sed -n 1p)" "1 个仓库 / 1 笔提交 / 成功 0 / 失败 1"
+        case $out in
+            *"此提交本地已经有了（可能已合入）"*) ok "重复打：结果说明是「本地已有」" ;;
+            *) bad "重复打的结果说明不对：[$out]" ;;
+        esac
+        chk "重复打之后工作树干净" "$(git -C "$GGCP_WORK" status --porcelain)" ""
+        chk "重复打之后没有 CHERRY_PICK_HEAD" \
+            "$(git -C "$GGCP_WORK" rev-parse -q --verify CHERRY_PICK_HEAD 2>/dev/null || true)" ""
         ggcp_reset
 
-        # 链接：老式 #/c/1234 和新式 /c/proj/+/1234
+        # ---- 链接：老式 #/c/1234 和新式 /c/proj/+/1234 ----
+        TWO_SHORT=$(printf '%s' "$GGCP_TWO_SHA" | cut -c1-12)
+        PS1_SHORT=$(printf '%s' "$GGCP_PS1_SHA" | cut -c1-12)
         srun "source $GGCP_ROOT/stub.sh
             cd $GGCP_WORK
             ggcp 'https://g.example.com/#/c/2'"
         chk "ggcp <老式链接>：退出码 0" "$rc" "0"
-        chk "ggcp <老式链接>：打的是 2 号" "$out" "正在下载2
-正在打补丁2
-打补丁成功"
+        case $out in
+            *platform/mylib*"$TWO_SHORT"*1*成功*) ok "ggcp <老式链接>：打的是 2 号" ;;
+            *) bad "ggcp <老式链接> 的表不对：[$out]" ;;
+        esac
         ggcp_reset
         srun "source $GGCP_ROOT/stub.sh
             cd $GGCP_WORK
             ggcp 'https://g.example.com/c/platform/mylib/+/1/1'"
         chk "ggcp <新式链接>：退出码 0" "$rc" "0"
         case $out in
-            *"正在下载1"*) ok "ggcp <新式链接>：编号从链接里取" ;;
-            *) bad "ggcp <新式链接> 没取到编号：[$out]" ;;
+            *platform/mylib*"$PS1_SHORT"*1*成功*) ok "ggcp <新式链接>：编号从链接里取" ;;
+            *) bad "ggcp <新式链接> 的表不对：[$out]" ;;
         esac
         ggcp_reset
 
-        # 查不到 / 项目不在工作区：都要红 + 非 0
+        # ---- 查不到 / 项目不在工作区：都进表、非 0 ----
         srun "source $GGCP_ROOT/stub.sh
             cd $GGCP_WORK
             ggcp 9"
         chk "change 查不到：退出码 1" "$rc" "1"
         case $out in
-            *"打补丁失败"*) ok "change 查不到也打红行" ;;
-            *) bad "change 查不到没打红行：[$out]" ;;
+            *查询失败*) ok "change 查不到：结果表里写「查询失败」" ;;
+            *) bad "change 查不到没进表：[$out]" ;;
+        esac
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggcp 9002"
+        chk "项目在清单里、目录没检出：退出码 1" "$rc" "1"
+        case $out in
+            *"项目目录不存在：gone/project"*) ok "目录没检出：表里说清要 repo sync" ;;
+            *) bad "目录没检出的结果说明不对：[$out]" ;;
+        esac
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggcp 9003"
+        chk "项目不在清单里：退出码 1" "$rc" "1"
+        case $out in
+            *"本地清单里没有项目 nope/nope"*) ok "项目不在清单里：表里说清" ;;
+            *) bad "项目不在清单里的结果说明不对：[$out]" ;;
         esac
 
-        # Change-Id：表格 + 逐个询问（-y / -n / 交互三种）
+        # ---- Change-Id：选择表 + 逐个询问（-y / -n / 交互三种）----
         ggcp_reset
         srun "printf 'y\nn\n' | {
                 source $GGCP_ROOT/stub.sh
@@ -799,14 +968,14 @@ EOF
             }"
         chk "Change-Id 逐个问：退出码 0" "$rc" "0"
         case $out in
-            *"编号  patchset  仓库"*) ok "Change-Id：打了表（编号/patchset/仓库/路径/提交链接）" ;;
-            *) bad "Change-Id 没打表：[$out]" ;;
+            *"编号  patchset  仓库"*) ok "Change-Id：打了选择表（编号/patchset/仓库/路径/提交链接）" ;;
+            *) bad "Change-Id 没打选择表：[$out]" ;;
         esac
-        chk "Change-Id：表里两个 patchset 各一行（看提交链接列）" \
+        chk "Change-Id：选择表里两个 patchset 各一行（看提交链接列）" \
             "$(printf '%s\n' "$out" | grep -c 'g.example.com/c/platform/mylib/+/1/')" "2"
         case $out in
-            *"路径"*"mylib"*) ok "Change-Id：表里有本地路径" ;;
-            *) bad "Change-Id 表里没路径：[$out]" ;;
+            *"路径"*"mylib"*) ok "Change-Id：选择表里有本地路径" ;;
+            *) bad "Change-Id 选择表里没路径：[$out]" ;;
         esac
         chk "Change-Id：逐个问了两次（y/n 各一次）" \
             "$(printf '%s\n' "$out" | grep -o '打补丁 1 (patchset' | wc -l | tr -d ' ')" "2"
@@ -816,8 +985,10 @@ EOF
         esac
         chk "Change-Id：答 y 的那个真打了（答 n 的没打）" \
             "$(git -C "$GGCP_WORK" log --oneline --format=%s | head -1)" "lab: change one (ps1)"
+        chk "Change-Id：最终结果表里只有答应的那一行" \
+            "$(printf '%s\n' "$out" | grep -c '^platform/mylib')" "1"
         case $out in
-            *"打补丁成功"*) ok "Change-Id：答应的那条出绿行" ;;
+            *platform/mylib*mylib*1*成功*) ok "Change-Id：答应的那条在结果表里是成功" ;;
             *) bad "Change-Id 答应的没打成功：[$out]" ;;
         esac
 
@@ -838,10 +1009,105 @@ EOF
             cd $GGCP_WORK
             ggcp -y I1111111111111111111111111111111111111111"
         chk "ggcp -y：退出码 0（两个 patchset 都打）" "$rc" "0"
-        chk "ggcp -y：不再问、两行绿" \
-            "$(printf '%s\n' "$out" | grep -c '^打补丁成功$')" "2"
+        chk "ggcp -y：总述 2 笔成功" \
+            "$(printf '%s\n' "$out" | grep '个仓库 / .* 笔提交' | tail -1)" \
+            "1 个仓库 / 2 笔提交 / 成功 2 / 失败 0"
+        chk "ggcp -y：表里两行成功" \
+            "$(printf '%s\n' "$out" | grep -c '^platform/mylib.*成功')" "2"
         chk "ggcp -y：两个 patchset 的文件都在" \
             "$(cat "$GGCP_WORK/ps1.txt" "$GGCP_WORK/ps2.txt" 2>/dev/null | tr '\n' '/')" "ps1/ps2/"
+        ggcp_reset
+
+        # ---- 四笔跨两个仓库：并行查询 + 同仓库串行 + 不同仓库并行 + 合并成一张表 ----
+        GR_QLOG="$T/ggcp-query.$SHELL_NAME.log"
+        GR_CLOG="$T/ggcp-cherry.$SHELL_NAME.log"
+        rm -f "$GR_QLOG" "$GR_CLOG"
+        ggcp_reset
+        srun "source $GGCP_ROOT/stub.sh
+            source $GGCP_ROOT/gitwrap.sh
+            export GR_QUERY_LOG=$GR_QLOG GR_CHERRY_LOG=$GR_CLOG
+            cd $GGCP_WORK
+            ggcp 101 102 103 104"
+        chk "ggcp 四笔：退出码 0" "$rc" "0"
+        chk "ggcp 四笔：总述 2 个仓库 / 4 笔提交 / 成功 4" \
+            "$(printf '%s\n' "$out" | sed -n 1p)" "2 个仓库 / 4 笔提交 / 成功 4 / 失败 0"
+        chk "ggcp 四笔：表里 2 行 mylib" \
+            "$(printf '%s\n' "$out" | grep -c '^platform/mylib')" "2"
+        chk "ggcp 四笔：表里 2 行 other" \
+            "$(printf '%s\n' "$out" | grep -c '^platform/other')" "2"
+        case $(printf '%s\n' "$out" | sed -n 4p; printf '%s\n' "$out" | sed -n 5p) in
+            *platform/mylib*) ok "ggcp 四笔：mylib 的两行连续（先按路径分组）" ;;
+            *) bad "ggcp 四笔：mylib 行不连续：[$out]" ;;
+        esac
+        case $(printf '%s\n' "$out" | sed -n 6p; printf '%s\n' "$out" | sed -n 7p) in
+            *platform/other*) ok "ggcp 四笔：other 的两行连续" ;;
+            *) bad "ggcp 四笔：other 行不连续：[$out]" ;;
+        esac
+        chk "ggcp 四笔：查询 4 次都开始/结束" \
+            "$(grep -c '^start' "$GR_QLOG")/$(grep -c '^end' "$GR_QLOG")" "4/4"
+        QMAX=$(awk '$1=="start"{n++; if(n>m)m=n} $1=="end"{n--} END{print m+0}' "$GR_QLOG")
+        if [ "$QMAX" -ge 2 ]; then
+            ok "ggcp 四笔：查询是并行的（最多同时 $QMAX 条）"
+        else
+            bad "ggcp 四笔：查询没有并行（最多同时 $QMAX 条）"
+        fi
+        CMAX_MY=$(awk -F '\t' '$1=="start-cherry" && $2 ~ /\/mylib$/ {n++; if(n>m)m=n} $1=="end-cherry" && $2 ~ /\/mylib$/ {n--} END{print m+0}' "$GR_CLOG")
+        CMAX_OT=$(awk -F '\t' '$1=="start-cherry" && $2 ~ /\/other$/ {n++; if(n>m)m=n} $1=="end-cherry" && $2 ~ /\/other$/ {n--} END{print m+0}' "$GR_CLOG")
+        CMAX_ALL=$(awk -F '\t' '$1=="start-cherry"{n++; if(n>m)m=n} $1=="end-cherry"{n--} END{print m+0}' "$GR_CLOG")
+        chk "ggcp 四笔：mylib 内部串行（同时最多 1 个 cherry-pick）" "$CMAX_MY" "1"
+        chk "ggcp 四笔：other 内部串行（同时最多 1 个 cherry-pick）" "$CMAX_OT" "1"
+        if [ "$CMAX_ALL" -ge 2 ]; then
+            ok "ggcp 四笔：不同仓库并行（最多同时 $CMAX_ALL 个）"
+        else
+            bad "ggcp 四笔：不同仓库没有并行（最多同时 $CMAX_ALL 个）"
+        fi
+        chk "ggcp 四笔：mylib 按用户给的顺序落（A2 在上）" \
+            "$(git -C "$GGCP_WORK" log --format=%s -2 | tr '\n' '/')" "lab: A2/lab: A1/"
+        chk "ggcp 四笔：other 按用户给的顺序落（B2 在上）" \
+            "$(git -C "$GGCP_OTHER" log --format=%s -2 | tr '\n' '/')" "lab: B2/lab: B1/"
+        chk "ggcp 四笔：两个工作树都干净" \
+            "$(git -C "$GGCP_WORK" status --porcelain)$(git -C "$GGCP_OTHER" status --porcelain)" ""
+
+        # ---- 文件冲突：逐文件写出来，然后 --abort 收干净 ----
+        ggcp_reset
+        printf 'local\n' > "$GGCP_WORK/ps1.txt"
+        git -C "$GGCP_WORK" add -A
+        git -C "$GGCP_WORK" commit -qm local
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggcp 1"
+        chk "文件冲突：退出码 1" "$rc" "1"
+        chk "文件冲突：总述失败 1" \
+            "$(printf '%s\n' "$out" | sed -n 1p)" "1 个仓库 / 1 笔提交 / 成功 0 / 失败 1"
+        case $out in
+            *"ps1.txt 文件冲突"*) ok "文件冲突：结果说明列出具体文件 ps1.txt" ;;
+            *) bad "文件冲突的结果说明没列文件：[$out]" ;;
+        esac
+        chk "文件冲突后工作树干净" "$(git -C "$GGCP_WORK" status --porcelain)" ""
+        chk "文件冲突后没有 CHERRY_PICK_HEAD" \
+            "$(git -C "$GGCP_WORK" rev-parse -q --verify CHERRY_PICK_HEAD 2>/dev/null || true)" ""
+        chk "文件冲突后本地已有的提交保留" \
+            "$(git -C "$GGCP_WORK" log -1 --format=%s)" "local"
+        ggcp_reset
+
+        # ---- 同仓库一笔失败不影响下一笔：失败的不回滚、成功的保留 ----
+        ggcp_reset
+        printf 'local\n' > "$GGCP_WORK/ps1.txt"
+        git -C "$GGCP_WORK" add -A
+        git -C "$GGCP_WORK" commit -qm local
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggcp 1 2"
+        chk "同仓库一败一成：退出码 1" "$rc" "1"
+        chk "同仓库一败一成：总述 成功 1 / 失败 1" \
+            "$(printf '%s\n' "$out" | sed -n 1p)" "1 个仓库 / 2 笔提交 / 成功 1 / 失败 1"
+        chk "同仓库一败一成：冲突行列出 ps1.txt" \
+            "$(printf '%s\n' "$out" | grep -c 'ps1.txt 文件冲突')" "1"
+        chk "同仓库一败一成：后一笔成功行还在" \
+            "$(printf '%s\n' "$out" | grep -c '^platform/mylib.*成功')" "1"
+        chk "同仓库一败一成：成功的那笔真进来了" \
+            "$(git -C "$GGCP_WORK" log -1 --format=%s)" "lab: change two"
+        chk "同仓库一败一成：工作树干净" "$(git -C "$GGCP_WORK" status --porcelain)" ""
         ggcp_reset
 
         # 下游工具坏了/查不到，别把 stderr 混进表格
@@ -861,31 +1127,52 @@ EOF
     if [ "$GGCP_OK" != 1 ]; then
         echo "  （没装 git，cdd <编号> 这几条跳过）"
     else
-        echo "== env.$SHELL_NAME：cdd <gerrit 编号> =="
+        echo "== env.$SHELL_NAME：cdd -N（gerrit 编号 -> 项目目录）=="
+
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            cdd -9001 >/dev/null 2>&1 && pwd"
+        chk "cdd -9001：跳到 gerrit 说的那个仓库" "$out" "$GGCP_WORK"
 
         srun "source $GGCP_ROOT/stub.sh
             cd $GGCP_WORK
             cdd 9001 >/dev/null 2>&1 && pwd"
-        chk "cdd 9001：跳到 gerrit 说的那个仓库" "$out" "$GGCP_WORK"
+        chk "cdd 9001（老写法）：也跳到那个仓库" "$out" "$GGCP_WORK"
 
         srun "source $GGCP_ROOT/stub.sh
             cd $GGCP_WORK
-            cdd 9002"
-        chk "cdd 9002（仓库不在工作区）：退出码 1" "$rc" "1"
-        chk "cdd 9002：打的正是那句话" \
-            "$out" "cdd: 9002 对应的仓库名 gone/project 在当前 repo 工作区不存在"
-
-        srun "source $GGCP_ROOT/stub.sh
-            cd $GGCP_WORK
-            cdd 9003"
-        chk "cdd 9003（清单里没这个项目）：退出码 1" "$rc" "1"
+            cdd -9002"
+        chk "cdd -9002（清单里有、目录没检出）：退出码 1" "$rc" "1"
         case $out in
-            *"cdd: 9003 对应的仓库名 nope/nope 在当前 repo 工作区不存在"*)
-                ok "cdd 9003：同一句话（外加一句提示）" ;;
-            *) bad "cdd 9003 的报错不对：[$out]" ;;
+            *"cdd: change 9002 属于项目 gone/project，但本地还没检出（清单路径 gone/project）"*)
+                ok "cdd -9002：说清属于哪个项目、但本地没检出" ;;
+            *) bad "cdd -9002 的报错不对：[$out]" ;;
+        esac
+        case $out in
+            *"先 repo sync gone/project"*) ok "cdd -9002：给了 repo sync 的下一步" ;;
+            *) bad "cdd -9002 没给下一步：[$out]" ;;
         esac
 
-        # 原有两条路不许被抢：现存目录 / 项目名，优先级都在"数字去 gerrit"前面
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            cdd -9003"
+        chk "cdd -9003（清单里没这个项目）：退出码 1" "$rc" "1"
+        case $out in
+            *"cdd: change 9003 属于项目 nope/nope，但当前工作区的清单里没有它"*)
+                ok "cdd -9003：说清项目、也说了清单里没有" ;;
+            *) bad "cdd -9003 的报错不对：[$out]" ;;
+        esac
+
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            cdd -9999"
+        chk "cdd -9999（gerrit 查不到）：退出码 1" "$rc" "1"
+        case $out in
+            *"cdd:"*"9999"*) ok "cdd -9999：报错里点了编号" ;;
+            *) bad "cdd -9999 的报错不清楚：[$out]" ;;
+        esac
+
+        # 原有三条路不许被抢：现存目录 / 项目名 / 现存文件
         mkdir -p "$GGCP_ROOT/12345"
         srun "cd $GGCP_ROOT
             source $GGCP_ROOT/stub.sh
@@ -895,6 +1182,10 @@ EOF
             cd $GGCP_WORK
             cdd device/emui/generic_a15 >/dev/null 2>&1 && pwd"
         chk "cdd <项目名>：还是走清单那套（不抢）" "$out" "$GGCP_WS/device/emui/generic_a15"
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            cdd other >/dev/null 2>&1 && pwd"
+        chk "cdd <第二个项目名>：也能跳" "$out" "$GGCP_OTHER"
         srun "source $GGCP_ROOT/stub.sh
             cd $GGCP_WORK
             cdd base.txt >/dev/null 2>&1 && pwd"

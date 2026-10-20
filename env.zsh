@@ -334,7 +334,7 @@ _repo_project_relpath () {
 
 # 内部：gerrit 上的提交编号 -> 它属于哪个项目（gerrit project 名）。
 # 复用 ggcp 那套服务器解析（环境变量 / client.conf / ~/.wtool/gerrit.conf / 猜 remote）
-# 和 gerrit_query.py 的 patchset 动作（第 5 列就是 project）。
+# 和 _gr_query_info（ggcp 的查询阶段也走它，不复制第二份 ssh/JSON 代码）。
 _cdd_project_from_change () {
     local number=$1 line
     if ! _gerrit_resolve >/dev/null 2>&1; then
@@ -343,20 +343,42 @@ _cdd_project_from_change () {
         echo "     或写 <repo 根>/.gerrit/client.conf（host=/port=/user=/sshkey=）" >&2
         return 1
     fi
-    if ! _gerrit_query_capture ${number}; then
-        echo "cdd: 连 ${_GERRIT_USER}@${_GERRIT_HOST}:${_GERRIT_PORT} 查询 change ${number} 失败" >&2
+    local errfile
+    errfile=$(mktemp "${TMPDIR:-/tmp}/cdd-query.XXXXXX") || return 1
+    if ! line=$(_gr_query_info ${number} '' 2>${errfile}); then
+        local msg
+        msg=$(_gr_first_line "$(cat ${errfile} 2>/dev/null)")
+        [[ -z ${msg} ]] && msg="查询 change ${number} 失败"
+        echo "cdd: ${msg}" >&2
+        rm -f ${errfile}
         return 1
     fi
-    if [[ -z ${_GERRIT_JSON//[[:space:]]/} ]]; then
-        echo "cdd: gerrit 上查不到 change ${number}（编号对不对？有没有权限？）" >&2
-        return 1
-    fi
-    if ! line=$(print -r -- ${_GERRIT_JSON} | python3 ${WTOOL_GERRIT_TOOL} patchset ${number} 2>&1); then
-        echo "cdd: gerrit 上查不到 change ${number}（编号对不对？有没有权限？）" >&2
-        print -r -- ${line} >&2
-        return 1
-    fi
+    rm -f ${errfile}
     print -r -- ${line} | cut -f5
+}
+
+# 内部：`cdd -N` / `cdd N` 的落点 —— 查编号所属项目，再找本地清单里的路径。
+# 两种情况分开报：清单里有但没检出 / 清单里根本没有这个项目。
+_cdd_cd_to_change () {
+    local change=$1 css_dir=$2 proj proj_rel
+    if ! proj=$(_cdd_project_from_change ${change}); then
+        return 1
+    fi
+    if [[ -z ${proj} ]]; then
+        echo "cdd: change ${change} 查不到它属于哪个项目" >&2
+        return 1
+    fi
+    if proj_rel=$(_repo_project_relpath ${proj}); then
+        if [[ -d ${css_dir}/${proj_rel} ]]; then
+            cd ${css_dir}/${proj_rel} && return 0
+            return 1
+        fi
+        echo "cdd: change ${change} 属于项目 ${proj}，但本地还没检出（清单路径 ${proj_rel}）" >&2
+        echo "     先 repo sync ${proj_rel}" >&2
+        return 1
+    fi
+    echo "cdd: change ${change} 属于项目 ${proj}，但当前工作区的清单里没有它" >&2
+    return 1
 }
 
 # 内部：`..` / `...` / `....` 这种"整个 token 都是点"的参数 -> 往上跳的层数。
@@ -375,7 +397,7 @@ cdd () {
         echo "Usage: cdd TARGET" >&2
         echo "  TARGET 可以是：清单里的项目名（allinkernel/wtool-doc.git 也行）、" >&2
         echo "                 相对 repo 根或当前目录的路径、现存的文件/目录、" >&2
-        echo "                 或者 gerrit 提交编号（去 gerrit 查它属于哪个仓库）" >&2
+        echo "                 gerrit 提交编号（-N；纯数字也认，但会先当现存目录）、" >&2
         echo "                 或者一串点（.. / ... / ....，往上跳\"点数-1\"层）" >&2
         return 2
     fi
@@ -395,6 +417,19 @@ cdd () {
         done
         cd ${up_path} || return 1
         return 0
+    fi
+    # `-N`：明确表示"这是 gerrit 提交编号，不是目录"（纯数字还留着，但它会先被
+    # 上面"现存目录"那条抢走）。去 gerrit 查它属于哪个项目，再跳到本地清单里
+    # 那个项目的目录。
+    if [[ ${target} == -<-> ]]; then
+        local change=${target#-} css_dir
+        if ! css_dir=$(css 2>/dev/null); then
+            echo "cdd: 当前目录不在 repo 工作区里（一路往上都找不到 .repo）" >&2
+            echo "     按提交编号跳转得先站在 repo 工作区里" >&2
+            return 1
+        fi
+        _cdd_cd_to_change ${change} ${css_dir}
+        return $?
     fi
     if [[ -e $target ]]; then
         if [[ -f $target ]]; then
@@ -423,21 +458,10 @@ cdd () {
         return 1
     fi
     # 纯数字 = gerrit 提交编号（ggcp 用的那个）：去 gerrit 查它属于哪个仓库，
-    # 然后**坍缩成 `cdd <仓库名>`** —— 走的还是上面那条路。
+    # 然后跳到那个仓库的本地目录。`-N` 是显式写法（见上面），纯数字是兼容老写法。
     if [[ ${target} == <-> ]]; then
-        local proj
-        proj=$(_cdd_project_from_change ${target}) || return 1
-        if [[ -z ${proj} ]]; then
-            echo "cdd: change ${target} 查不到它属于哪个项目" >&2
-            return 1
-        fi
-        if repo_rel=$(_repo_project_relpath ${proj}) && [[ -d ${css_dir}/${repo_rel} ]]; then
-            cdd ${proj}
-            return $?
-        fi
-        echo "cdd: ${target} 对应的仓库名 ${proj} 在当前 repo 工作区不存在" >&2
-        [[ -z ${repo_rel} ]] && echo "     （本地清单里也没有 ${proj} 这个项目）" >&2
-        return 1
+        _cdd_cd_to_change ${target} ${css_dir}
+        return $?
     fi
     echo "cdd: 清单里没有 '${target}' 这个项目名或路径" >&2
     echo "     看看都有什么：$WTOOL_REPO_TOOL list --root ${css_dir}" >&2
@@ -808,20 +832,83 @@ _gerrit_query_capture () {
     return ${rc}
 }
 
+# 内部：查一个 change + patchset，成功时 stdout 打一行 TSV：
+#   number  patchset  revision  ref  project  branch  url  subject
+# 失败时返回 1，原因放在 _GR_QUERY_ERR（ggcp 和 cdd 共用这一份查询逻辑）。
+_gr_query_info () {
+    local change=$1 wanted=$2 json line
+    typeset -g _GR_QUERY_ERR
+    _GR_QUERY_ERR=
+    if ! _gerrit_query_capture ${change}; then
+        _GR_QUERY_ERR="连 ${_GERRIT_USER}@${_GERRIT_HOST}:${_GERRIT_PORT} 查询 change ${change} 失败"
+        print -r -- "${_GR_QUERY_ERR}" >&2
+        return 1
+    fi
+    json=${_GERRIT_JSON}
+    if [[ -z ${json//[[:space:]]/} ]]; then
+        _GR_QUERY_ERR="gerrit 上查不到 change ${change}（编号对不对？有没有权限？）"
+        print -r -- "${_GR_QUERY_ERR}" >&2
+        return 1
+    fi
+    local -a args
+    args=(patchset ${change})
+    [[ -n ${wanted} ]] && args+=(${wanted})
+    if ! line=$(print -r -- ${json} | python3 ${WTOOL_GERRIT_TOOL} ${args} 2>&1); then
+        _GR_QUERY_ERR=$(print -r -- ${line} | head -n 1)
+        if [[ ${_GR_QUERY_ERR} == *没有匹配* ]]; then
+            _GR_QUERY_ERR="gerrit 上查不到 change ${change}（编号对不对？有没有权限？）"
+        fi
+        [[ -z ${_GR_QUERY_ERR} ]] && \
+            _GR_QUERY_ERR="gerrit 上查不到 change ${change} 的 patchset ${wanted}"
+        print -r -- "${_GR_QUERY_ERR}" >&2
+        return 1
+    fi
+    print -r -- ${line}
+    return 0
+}
+
+# 内部：多行输出取第一行非空内容（表格里一格只能放一行）。
+_gr_first_line () {
+    print -r -- "$1" | awk 'NF { print; exit }'
+}
+
+# 内部：结果表里显示的短 commit id（12 位；空的就是 `-`）。
+_gr_short_sha () {
+    local sha=$1
+    [[ -z ${sha} ]] && { print -r -- '-'; return 0; }
+    print -r -- ${sha} | cut -c1-12
+}
+
+# 内部：把一个仓库的所有提交标记成同一个失败原因（项目不在清单 / 目录没检出 / 工作树脏…）。
+_gr_repo_fail_all () {
+    local project=$1 spec=$2 out=$3 reason=$4
+    local number pset revision ref p branch url rel
+    while IFS=$'\t' read -r number pset revision ref p branch url rel; do
+        [[ -z ${pset} ]] && pset='-'
+        print -r -- "${project}"$'\t'"${rel:--}"$'\t'"$(_gr_short_sha "${revision}")"$'\t'"${pset}"$'\t'"${reason}" >> ${out}
+    done < ${spec}
+}
+
+
 # ---------------------------------------------------------------------------
 # ggcp —— 把 gerrit 上的提交抓回本地并 cherry-pick
 #
-# 所有入口最后都**坍缩成"按 gerrit 编号打补丁"这一件事**（_gr_apply_change）：
+# 所有入口最后都**坍缩成"按编号打补丁"这一件事**：
 #   编号          ggcp 1234
 #   编号列表      ggcp 1,2,3（英文逗号）/ ggcp 1 2 3（空格）/ 混用 ggcp 1,2 3
 #   gerrit 链接   ggcp https://host/#/c/1234  或  https://host/c/proj/+/1234
 #   Change-Id     ggcp I1111…（去 gerrit 查它的**所有**提交，打表后逐个问）
-# 正常路径只打四行：正在下载N / 正在打补丁N / 打补丁成功（绿）/ 打补丁失败（红）；
-# git fetch、cherry-pick 的原始输出一律吞掉，只有失败时才把关键错误打到 stderr。
+#
+# 两阶段执行：
+#   阶段 1  每个补丁一条 gerrit 查询，**全部并行**（查询结果各自落到临时文件）；
+#   阶段 2  按项目分组：**同仓库串行**（按用户给的顺序）、**不同仓库并行**。
+# 每个仓库全部结束后才把它的行写进缓冲；最后按项目路径排序合并成**一张表**。
+# git fetch / cherry-pick 的原始输出一律吞掉，只把关键错误放进"结果说明"列。
 # ---------------------------------------------------------------------------
 
 # 颜色：**只有自动两条** —— 设了 NO_COLOR 就不上色；否则 stdout 是 tty 才上色。
 # 没有"强制开关"这种变量（用户口径：不给用户加看不懂的旋钮）。
+# （ggcp 的结果表不上色：ANSI 码会破坏中文对齐；这两个函数留给别的调用方。）
 _gr_color_on () {
     [[ -n ${NO_COLOR:-} ]] && return 1
     [[ -t 1 ]]
@@ -912,88 +999,132 @@ _gr_ask () {
     esac
 }
 
-# 打**一个**补丁（编号 + 可选 patchset）—— ggcp 的所有入口最后都坍缩到这里。
-# 正常路径只打四行：正在下载N / 正在打补丁N / 打补丁成功 / 打补丁失败。
-_gr_apply_change () {
-    local change=$1 wanted=$2
-    local json line number pset revision ref project branch url subject
-    if ! _gerrit_query_capture ${change}; then
-        _gr_red 打补丁失败
-        echo "ggcp: 连 ${_GERRIT_USER}@${_GERRIT_HOST}:${_GERRIT_PORT} 查询 change ${change} 失败" >&2
-        return 1
-    fi
-    json=${_GERRIT_JSON}
-    if [[ -z ${json//[[:space:]]/} ]]; then
-        _gr_red 打补丁失败
-        echo "ggcp: change ${change} 查不到（编号对不对？有没有权限？）" >&2
-        return 1
-    fi
+# 查询阶段的**一条**任务：查 gerrit，再算本地清单路径，打一行 8 列 TSV：
+#   number  patchset  revision  ref  project  branch  url  relpath
+# relpath 拿不到就写 `-`（后面按项目分组，失败原因由执行阶段给）。
+_gr_query_one () {
+    local change=$1 wanted=$2 line project rel
+    line=$(_gr_query_info ${change} ${wanted}) || return 1
+    project=$(print -r -- ${line} | cut -f5)
+    rel=$(_repo_project_relpath ${project} 2>/dev/null) || rel='-'
+    [[ -z ${rel} ]] && rel='-'
+    print -r -- "$(print -r -- ${line} | cut -f1-7)"$'\t'"${rel}"
+}
 
-    local -a args
-    args=(patchset ${change})
-    [[ -n ${wanted} ]] && args+=(${wanted})
-    if ! line=$(print -r -- ${json} | python3 ${WTOOL_GERRIT_TOOL} ${args} 2>&1); then
-        _gr_red 打补丁失败
-        print -r -- ${line} >&2
-        return 1
-    fi
-    IFS=$'\t' read -r number pset revision ref project branch url subject <<< ${line}
-    [[ -z ${ref} ]] && ref=${revision}
+# 执行阶段的**一个仓库**：spec 里每一行是一个提交（按用户给的顺序，**串行**）。
+# 结果全部写进 out（5 列 TSV：项目名 项目路径 提交id patchset 结果说明），
+# 本函数**不直接打印** —— 交给父进程按仓库聚拢后合并成一张表。
+_gr_repo_batch () {
+    local project=$1 spec=$2 out=$3
+    local number pset revision ref p branch url rel root dir remote
+    local fetch_out cherry_out fetched porcelain files abort_out after reason rc
+    : > ${out}
 
-    local dir
-    if ! dir=$(cdd_path ${project}); then
-        _gr_red 打补丁失败
-        echo "ggcp: change ${change} 属于项目 '${project}'，但清单里找不到它" >&2
-        echo "      （本地清单和 gerrit 上的是同一份吗？）" >&2
+    root=$(css 2>/dev/null) || root=''
+    IFS=$'\t' read -r number pset revision ref p branch url rel < ${spec} || true
+    if [[ -z ${root} ]]; then
+        _gr_repo_fail_all ${project} ${spec} ${out} '当前目录不在 repo 工作区里'
         return 1
     fi
+    if [[ -z ${rel} || ${rel} == '-' ]]; then
+        _gr_repo_fail_all ${project} ${spec} ${out} "本地清单里没有项目 ${project}"
+        return 1
+    fi
+    dir=${root}/${rel}
     if [[ ! -d ${dir} ]]; then
-        _gr_red 打补丁失败
-        echo "ggcp: 项目 '${project}' 的目录还不存在：${dir}（先 repo sync ${project}）" >&2
+        _gr_repo_fail_all ${project} ${spec} ${out} "项目目录不存在：${rel}（先 repo sync ${rel}）"
         return 1
     fi
-
-    cd ${dir} || { _gr_red 打补丁失败; return 1 }
-    local remote
+    cd ${dir} || {
+        _gr_repo_fail_all ${project} ${spec} ${out} "进不了项目目录：${dir}"
+        return 1
+    }
     if ! remote=$(_gerrit_project_remote); then
-        _gr_red 打补丁失败
-        echo "ggcp: 在 $(pwd) 里找不到可用的 git remote" >&2
+        _gr_repo_fail_all ${project} ${spec} ${out} "找不到可用的 git remote"
+        return 1
+    fi
+    # 有本地改动时不动工作树：cherry-pick 的冲突/回滚都会和它搅在一起，
+    # 后面就说不清"工作树干净"到底干不干净。
+    if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
+        _gr_repo_fail_all ${project} ${spec} ${out} '工作树有本地改动（先 stash/commit）'
         return 1
     fi
 
-    local out rc fetched
-    print -r -- "正在下载${number}"
-    out=$(GIT_SSH_COMMAND=$(_gerrit_git_ssh_command) git fetch ${remote} ${ref} 2>&1)
-    rc=$?
-    if (( rc != 0 )); then
-        _gr_red 打补丁失败
-        echo "ggcp: git fetch ${remote} ${ref} 失败：" >&2
-        print -r -- "${out}" >&2
-        return 1
-    fi
-    # fetch 回来核对一下：ref 里写的 patchset 和 gerrit 报的 commit 必须是同一个，
-    # 不然就是我把 ref 拼错了，这时候宁可不 cherry-pick
-    fetched=$(git rev-parse FETCH_HEAD 2>/dev/null)
-    if [[ ${fetched} != ${revision} ]]; then
-        _gr_red 打补丁失败
-        echo "ggcp: change ${number} 抓到的 commit（${fetched}）和 gerrit 说的（${revision}）对不上，这次不 cherry-pick" >&2
-        return 1
-    fi
-
-    print -r -- "正在打补丁${number}"
-    out=$(GIT_SSH_COMMAND=$(_gerrit_git_ssh_command) git cherry-pick ${revision} 2>&1)
-    rc=$?
-    if (( rc != 0 )); then
-        _gr_red 打补丁失败
-        print -r -- "${out}" >&2
-        if [[ -f $(git rev-parse --git-path CHERRY_PICK_HEAD 2>/dev/null) ]]; then
-            echo "ggcp: cherry-pick 没走完（冲突，或者这个补丁已经打过了、变成空提交）：" >&2
-            echo "      git cherry-pick --continue / --skip / --abort 自己收尾" >&2
+    while IFS=$'\t' read -r number pset revision ref p branch url rel; do
+        [[ -n ${ref} ]] || ref=${revision}
+        [[ -z ${pset} ]] && pset='-'
+        if [[ -z ${revision} ]]; then
+            reason='gerrit 没给出 commit id'
+            print -r -- "${project}"$'\t'"${rel:--}"$'\t-'$'\t'"${pset}"$'\t'"${reason}" >> ${out}
+            continue
         fi
-        return 1
-    fi
-    _gr_green 打补丁成功
+
+        fetch_out=$(GIT_SSH_COMMAND=$(_gerrit_git_ssh_command) git fetch ${remote} ${ref} < /dev/null 2>&1)
+        rc=$?
+        if (( rc != 0 )); then
+            reason="下载失败：$(_gr_first_line "${fetch_out}")"
+            [[ ${reason} == '下载失败：' ]] && reason='下载失败'
+            print -r -- "${project}"$'\t'"${rel:--}"$'\t'"$(_gr_short_sha ${revision})"$'\t'"${pset}"$'\t'"${reason}" >> ${out}
+            continue
+        fi
+
+        # 核对：ref 里写的 patchset 和 gerrit 报的 commit 必须是同一个，
+        # 不然就是 ref 拼错了，这时候宁可不 cherry-pick。
+        fetched=$(git rev-parse FETCH_HEAD 2>/dev/null)
+        if [[ ${fetched} != ${revision} ]]; then
+            reason="抓到的 commit（${fetched}）和 gerrit 说的（${revision}）不一致"
+            print -r -- "${project}"$'\t'"${rel:--}"$'\t'"$(_gr_short_sha ${revision})"$'\t'"${pset}"$'\t'"${reason}" >> ${out}
+            continue
+        fi
+
+        cherry_out=$(GIT_SSH_COMMAND=$(_gerrit_git_ssh_command) git cherry-pick ${revision} < /dev/null 2>&1)
+        rc=$?
+        if (( rc == 0 )); then
+            reason='成功'
+        else
+            porcelain=$(git status --porcelain --untracked-files=no)
+            if [[ -n ${porcelain} ]]; then
+                # 有文件就是冲突：把 git status 里的路径原样列出来（一行一格）
+                files=$(print -r -- ${porcelain} | cut -c4- | tr '\n' ' ')
+                files=${files% }
+                reason="${files} 文件冲突"
+            else
+                # status 为空 = 没有冲突文件：最常见的是这个补丁已经在了/已合入，
+                # cherry-pick 变成一个空提交（CHERRY_PICK_HEAD 还在）。
+                reason='此提交本地已经有了（可能已合入）'
+            fi
+            # ⚠️ 必须收干净：留着冲突态会把用户的 git 卡在 cherry-pick 中间。
+            # 只用 --abort（回到 cherry-pick 之前），**绝不** reset --hard。
+            if git rev-parse -q --verify CHERRY_PICK_HEAD >/dev/null 2>&1; then
+                if ! abort_out=$(git cherry-pick --abort < /dev/null 2>&1); then
+                    git cherry-pick --quit < /dev/null >/dev/null 2>&1 || true
+                    [[ -n ${abort_out} ]] && \
+                        reason="${reason}（清理：$(_gr_first_line "${abort_out}")）"
+                fi
+            fi
+            after=$(git status --porcelain --untracked-files=no)
+            if [[ -n ${after} ]]; then
+                reason="${reason}（工作树没清干净，请手工处理）"
+            fi
+        fi
+        reason=${reason//$'\n'/ }
+        reason=${reason//$'\t'/ }
+        print -r -- "${project}"$'\t'"${rel:--}"$'\t'"$(_gr_short_sha ${revision})"$'\t'"${pset}"$'\t'"${reason}" >> ${out}
+    done < ${spec}
     return 0
+}
+
+# 打印"总述 + 一张表"。返回 0 = 全部成功；1 = 至少有失败。
+_gr_result_table () {
+    local rows=$1 repos=$2 total=$3 ok fail
+    ok=$(awk -F '\t' '$5 == "成功" { n++ } END { print n + 0 }' ${rows})
+    fail=$(( total - ok ))
+    print -r -- "${repos} 个仓库 / ${total} 笔提交 / 成功 ${ok} / 失败 ${fail}"
+    if ! python3 ${WTOOL_GERRIT_TOOL} result-table < ${rows}; then
+        # python 那边出问题时别把结果吞掉：退回原始 TSV（至少信息还在）
+        cat ${rows}
+    fi
+    (( fail == 0 ))
 }
 
 # Change-Id -> 去 gerrit 查它的**所有提交**（同一 Change-Id 可能横跨多个分支 /
@@ -1076,7 +1207,7 @@ _gr_expand_changeids () {
 #   Change-Id 会先在 gerrit 上展开成它的所有提交，打表后逐个询问。
 #   -p <n> 指定 patchset（默认当前那个）；-y 全打不问；-n 全跳过。
 ggcp () {
-    local assume= ps_all= item number patchset rc=0
+    local assume= ps_all= item number patchset rc=0 revision ref branch url
     while [[ $# -gt 0 ]]; do
         case $1 in
             -y|--yes)      assume=yes; shift ;;
@@ -1116,12 +1247,86 @@ ggcp () {
         return 0
     fi
 
+    local work
+    work=$(mktemp -d "${TMPDIR:-/tmp}/ggcp.XXXXXX") || {
+        echo "ggcp: 建不了临时目录" >&2
+        return 1
+    }
+    local -a qpids rpids
+    local item_count=0 i gid g=0 project rel gidx sortkey
+
+    # ---- 阶段 1：每个补丁一条查询，全部并行（结果各写各的文件，互不穿插）----
     for item in ${_GGCP_ITEMS}; do
         number=${item%%|*}
         patchset=${item#*|}
         [[ -n ${ps_all} ]] && patchset=${ps_all}
-        _gr_apply_change ${number} ${patchset} || rc=1
+        item_count=$(( item_count + 1 ))
+        i=${item_count}
+        printf '%s\t%s\n' "${number}" "${patchset}" > "${work}/req.${i}"
+        ( _gr_query_one "${number}" "${patchset}" > "${work}/out.${i}" 2> "${work}/err.${i}" ) < /dev/null &
+        qpids+=($!)
     done
+    for i in ${qpids}; do
+        wait ${i} 2>/dev/null || true
+    done
+
+    # ---- 阶段 2：按项目分组（同一个项目 = 同一个仓库，串行；项目之间并行）----
+    : > "${work}/seen"
+    : > "${work}/groups"
+    for (( i = 1; i <= item_count; i++ )); do
+        [[ -s "${work}/out.${i}" ]] || continue
+        IFS=$'\t' read -r number patchset revision ref project branch url rel < "${work}/out.${i}"
+        [[ -z ${project} ]] && project='-'
+        if ! grep -Fxq -- "${project}" "${work}/seen"; then
+            g=$(( g + 1 ))
+            print -r -- "${project}" >> "${work}/seen"
+            print -r -- "${g}"$'\t'"${project}" >> "${work}/groups"
+        fi
+        gid=$(awk -F '\t' -v p="${project}" '$2 == p { print $1; exit }' "${work}/groups")
+        cat "${work}/out.${i}" >> "${work}/g.${gid}.spec"
+    done
+
+    # 仓库之间按本地路径排序（稳定、可读；路径拿不到就按项目名）
+    : > "${work}/order"
+    while IFS=$'\t' read -r gidx project; do
+        rel=$(cut -f8 "${work}/g.${gidx}.spec" | head -n 1)
+        if [[ -z ${rel} || ${rel} == '-' ]]; then
+            sortkey=${project}
+        else
+            sortkey=${rel}
+        fi
+        print -r -- "${sortkey}"$'\t'"${gidx}"$'\t'"${project}" >> "${work}/order"
+    done < "${work}/groups"
+    LC_ALL=C sort -t $'\t' -k1,1 "${work}/order" > "${work}/order.sorted"
+
+    # 每个仓库一个后台任务：仓库内部串行，仓库之间并行
+    while IFS=$'\t' read -r sortkey gid project; do
+        ( _gr_repo_batch "${project}" "${work}/g.${gid}.spec" "${work}/rows.${gid}" ) < /dev/null &
+        rpids+=($!)
+    done < "${work}/order.sorted"
+    for i in ${rpids}; do
+        wait ${i} 2>/dev/null || true
+    done
+
+    # 各仓库都结束后才合并结果：先按仓库分组，查询失败的排在最后
+    : > "${work}/rows.all"
+    while IFS=$'\t' read -r sortkey gid project; do
+        [[ -f "${work}/rows.${gid}" ]] && cat "${work}/rows.${gid}" >> "${work}/rows.all"
+    done < "${work}/order.sorted"
+    local reason
+    for (( i = 1; i <= item_count; i++ )); do
+        [[ -s "${work}/out.${i}" ]] && continue
+        IFS=$'\t' read -r number patchset < "${work}/req.${i}"
+        [[ -z ${patchset} ]] && patchset='-'
+        reason=$(_gr_first_line "$(cat "${work}/err.${i}" 2>/dev/null)")
+        [[ -z ${reason} ]] && reason='查询失败'
+        reason=${reason//$'\t'/ }
+        print -r -- '-'$'\t-'$'\t-'$'\t'"${patchset}"$'\t'"查询失败：${reason}" >> "${work}/rows.all"
+    done
+
+    _gr_result_table "${work}/rows.all" "${g}" "${item_count}"
+    rc=$?
+    rm -rf "${work}"
     return ${rc}
 }
 

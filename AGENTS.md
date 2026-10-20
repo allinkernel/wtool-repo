@@ -36,6 +36,10 @@
 
 ## 2. 这个仓库的硬规矩
 
+- **`ggcp` 的结果表是"按仓库聚拢后一次性打印"的**：阶段 1 并行查询、阶段 2 同仓库串行 /
+  不同仓库并行，每个仓库的结果先写缓冲，全部结束后才合并成一张表（`gerrit_query.py
+  result-table`）。改输出时别退回"边执行边打印"——那会让不同仓库的日志穿插。
+- **`cdd -N` 和 `ggcp` 共用 `_gr_query_info`**：不要在 `cdd` 里另写一份 ssh/JSON 解析。
 - **`env.zsh` 和 `env.bash` 必须同改。** 同一批命令、同样的报错文字、同样的退出码。
   报错前缀两个 shell 都取"当前函数名"（zsh `funcstack[1]` / bash `FUNCNAME[0]`），
   改报错时别把这条弄丢。
@@ -59,10 +63,16 @@
 ## 3. 验证（改完必须跑）
 
 ```sh
-sh tests/run_tests.sh      # 335 条，应该全绿（以脚本最后打印的通过/失败数为准；
-                           #   2026-10-09 实测 335 通过 0 失败（这一版加了 cdd 的点参数，
-                           #   +26 条；同一天早些时候是 309）—— 这个数字常变，
+sh tests/run_tests.sh      # 442 条，应该全绿（以脚本最后打印的通过/失败数为准；
+                           #   2026-10-21 实测 442 通过 0 失败（这一版加了 ggcp 两阶段
+                           #   表格输出 / 冲突分类 / cdd -N，+107 条）—— 这个数字常变，
                            #   只有它**跑出来**的 PASS/FAIL 行算数，别手抄）
+                           #
+                           #   ⚠️ 本机 PATH 里 `zsh` 可能先命中 ~/.wtool/usr/bin/zsh
+                           #   （module_path 指向 /root，zsh/regex 加载不了 → 大面积红）。
+                           #   用系统 zsh：
+                           #   env $(env | sed -n 's/^\(WTOOL[A-Z_]*\)=.*/-u \1/p') \
+                           #       PATH=/usr/bin:/bin sh tests/run_tests.sh
 ```
 
 - 三段：`my_repo.py`、`gerrit_query.py`、`env.zsh`/`env.bash` 对比（同一张用例表跑两个 shell）。
