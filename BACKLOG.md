@@ -44,7 +44,7 @@
 
 **验证到什么程度**：
 
-- `sh tests/run_tests.sh` → **442 通过 / 0 失败**（改前 335；新增 107 条，
+- `sh tests/run_tests.sh` → **452 通过 / 0 失败**（改前 335；新增 117 条，
   两个 shell 同一张表各跑一遍）。⚠️ 本机要先把 PATH 里的 `~/.wtool/usr/bin/zsh` 挡掉
   （它的 `module_path` 指向 `/root`，`zsh/regex` 加载不了），用系统 `/usr/bin/zsh`。
 - 新增夹具（`$T/ggcp/`）：第二个仓库 `other`、四笔 `101..104`（101/102 同一个文件的两步、
@@ -68,8 +68,10 @@
 - **表格不做原地刷新**：按用户允许的方案，仓库结束后才输出最终行，进度看总述；
 - **Change-Id 展开阶段仍是串行查询**（一个 Change-Id 一条 query），展开之后的"每个 patchset"
   才进入阶段 1 并行；
-- **gerrit 服务器没配置 / Change-Id 展开失败**这两类"还没进入补丁结果"的错误仍走 stderr，
-  不一定有结果表（主流程的查询失败、fetch 失败、cherry-pick 失败都有表）；
+- **gerrit 服务器没配置 / Change-Id 展开失败**这两类"还没进入补丁结果"的错误：
+  现在也会打一张 `0 个仓库 / N 笔提交 / 成功 0 / 失败 N` 的结果表（行是
+  `查询失败：不知道 gerrit 服务器在哪` / `查询失败：Change-Id 展开失败`），
+  但**详细原因仍在 stderr**（配置途径、哪个 Change-Id 查不到）—— 表格只放一行摘要；
 - 真机交互式 zsh 的 oh-my-zsh global alias（`...` → `../..`）仍然会先把参数改写掉，
   `cdd` 落点不变；这是既有行为，没改；
 - 旧条目里"正常路径只打 `正在下载N` / `正在打补丁N` / `打补丁成功`"和"坍缩到
@@ -81,7 +83,7 @@
 ```sh
 cd ~/self/wtool/tools/git-repo-sh-tools
 env $(env | sed -n 's/^\(WTOOL[A-Z_]*\)=.*/-u \1/p') PATH=/usr/bin:/bin sh tests/run_tests.sh
-# 442 通过, 0 失败
+# 452 通过, 0 失败
 ```
 
 ---

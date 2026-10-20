@@ -87,6 +87,10 @@ GitHub 仓库名仍是 `allinkernel/wtool-repo`，2026-10-04 由 `tools/repo` �
 
 **ggcp 的两阶段**：
 
+还没进入补丁结果就失败时（`_gerrit_resolve` 失败 / `_gr_expand_changeids` 失败）先走
+`_gr_fail_table <原因>`：给每个用户条目写一行
+`-  -  -  <patchset|->  查询失败：<原因>`，再用 `_gr_result_table` 打表；详细原因仍在 stderr。
+
 1. `work=$(mktemp -d "${TMPDIR:-/tmp}/ggcp.XXXXXX")`，每个 `_GGCP_ITEMS` 条目写一个
    `req.N`，然后 `( _gr_query_one … > out.N 2> err.N ) < /dev/null &` —— **全部并行**，
    pid 收进数组后逐个 `wait`。查询之间不共享 stdout/stderr，所以不会互相穿插。
@@ -201,7 +205,7 @@ zsh 用 `[[ ${token} == *[!.]* ]] && return 1`，bash 用 `case ${token} in *[!.
 
 ## 5. 测试
 
-`tests/run_tests.sh`（`#!/bin/sh` + `set -eu`，442 条，不连网）：
+`tests/run_tests.sh`（`#!/bin/sh` + `set -eu`，452 条，不连网）：
 
 1. `my_repo.py`：假工作区（`.repo/repo` **不存在**、`<include>`、`local_manifests`、
    remote/project 级 revision）上的查询、`list`、错误处理；

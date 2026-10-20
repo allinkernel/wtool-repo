@@ -403,6 +403,7 @@ platform/other  other     088d75bf36eb  1         成功
 | cherry-pick 失败，且 `git status` **有文件** | `<文件1> <文件2> … 文件冲突` | 逐个列出冲突文件（如 `ps1.txt 文件冲突`） |
 | 其它失败（fetch / 校验 / 进不了目录 …） | `下载失败：<关键 stderr 行>` / `抓到的 commit（X）和 gerrit 说的（Y）不一致` / `项目目录不存在：X（先 repo sync X）` / `本地清单里没有项目 X` / `查询失败：<关键 stderr 行>` | 只取关键行，不把整段 git/ssh 输出塞进表格 |
 | 工作树原本就有已跟踪文件的改动 | `工作树有本地改动（先 stash/commit）` | **不动**这样的工作树；先自己 stash/commit |
+| gerrit 没配置 / Change-Id 展开失败 | `查询失败：不知道 gerrit 服务器在哪` / `查询失败：Change-Id 展开失败` | 连"补丁结果"都没进入的失败也打表；详细原因（配置途径 / 哪个 Change-Id）仍在 stderr |
 
 **冲突后一定收干净**：失败时如果 `CHERRY_PICK_HEAD` 还在，执行
 `git cherry-pick --abort`（**只用 `--abort`，绝不 `reset --hard`**）；然后重新看
@@ -639,7 +640,7 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 ## 测试
 
 ```sh
-sh tests/run_tests.sh      # 442 条（六段合计，以脚本最后打印的通过/失败数为准）
+sh tests/run_tests.sh      # 452 条（六段合计，以脚本最后打印的通过/失败数为准）
 ```
 
 测试分六段（都在临时目录里造"公司环境"的假工作区 / 假裸仓 / 假 gerrit，不碰真工作区、不连网）：

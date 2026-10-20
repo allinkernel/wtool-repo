@@ -1127,6 +1127,27 @@ _gr_result_table () {
     (( fail == 0 ))
 }
 
+# 还没进入"补丁结果"就失败时（gerrit 没配置 / Change-Id 展开失败）也打一张表：
+# 每个用户给的条目一行，结果说明统一写失败原因。返回 1。
+_gr_fail_table () {
+    local reason=$1 rows item number patchset cid total=0
+    rows=$(mktemp "${TMPDIR:-/tmp}/ggcp-fail.XXXXXX") || return 1
+    for item in ${_GGCP_ITEMS}; do
+        number=${item%%|*}
+        patchset=${item#*|}
+        [[ -z ${patchset} ]] && patchset='-'
+        print -r -- '-'$'\t-'$'\t-'$'\t'"${patchset}"$'\t'"查询失败：${reason}" >> ${rows}
+        total=$(( total + 1 ))
+    done
+    for cid in ${_GGCP_IDS}; do
+        print -r -- '-'$'\t-'$'\t-'$'\t-'$'\t'"查询失败：${reason}" >> ${rows}
+        total=$(( total + 1 ))
+    done
+    _gr_result_table ${rows} 0 ${total}
+    rm -f ${rows}
+    return 1
+}
+
 # Change-Id -> 去 gerrit 查它的**所有提交**（同一 Change-Id 可能横跨多个分支 /
 # 多个 change，每个还有多个 patchset），打一张表（编号/patchset/仓库/路径/提交链接），
 # 然后挨个问"给这个仓库打这个补丁吗？"。答应的条目追加进 _GGCP_ITEMS。
@@ -1234,12 +1255,18 @@ ggcp () {
         _gr_ggcp_usage
         return 2
     fi
-    _gerrit_resolve || return 1
+    if ! _gerrit_resolve; then
+        _gr_fail_table '不知道 gerrit 服务器在哪'
+        return 1
+    fi
 
     # Change-Id 那条路：先在 gerrit 上展开成"编号 + patchset"，问过之后
     # 追进 _GGCP_ITEMS —— 于是所有入口都坍缩成"按编号打补丁"。
     if (( ${#_GGCP_IDS} )); then
-        _gr_expand_changeids ${assume} || return $?
+        if ! _gr_expand_changeids ${assume}; then
+            _gr_fail_table 'Change-Id 展开失败'
+            return 1
+        fi
     fi
 
     if (( ${#_GGCP_ITEMS} == 0 )); then

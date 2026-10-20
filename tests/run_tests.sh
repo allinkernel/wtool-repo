@@ -942,6 +942,20 @@ EOF
             *查询失败*) ok "change 查不到：结果表里写「查询失败」" ;;
             *) bad "change 查不到没进表：[$out]" ;;
         esac
+
+        # gerrit 服务器都没配置：也打结果表（不是只甩一段 stderr）
+        srun "cd $T
+            unset WTOOL_GERRIT_HOST WTOOL_GERRIT_PORT WTOOL_GERRIT_USER WTOOL_GERRIT_SSH_KEY WTOOL_GERRIT_CONF
+            source $GGCP_ROOT/stub.sh
+            ggcp 1"
+        chk "没配 gerrit：退出码 1" "$rc" "1"
+        chk "没配 gerrit：总述一行失败" \
+            "$(printf '%s\n' "$out" | grep '个仓库 / .* 笔提交' | tail -1)" \
+            "0 个仓库 / 1 笔提交 / 成功 0 / 失败 1"
+        case $out in
+            *"查询失败：不知道 gerrit 服务器在哪"*) ok "没配 gerrit：结果表里也写清楚了" ;;
+            *) bad "没配 gerrit 没进结果表：[$out]" ;;
+        esac
         srun "source $GGCP_ROOT/stub.sh
             cd $GGCP_WORK
             ggcp 9002"
@@ -1120,6 +1134,13 @@ EOF
         case $out in
             *"在 gerrit 上查不到"*) ok "Change-Id 查不到时报得清楚" ;;
             *) bad "Change-Id 查不到的报错不清楚：[$out]" ;;
+        esac
+        chk "Change-Id 查不到：也打结果表" \
+            "$(printf '%s\n' "$out" | grep '个仓库 / .* 笔提交' | tail -1)" \
+            "0 个仓库 / 1 笔提交 / 成功 0 / 失败 1"
+        case $out in
+            *"查询失败：Change-Id 展开失败"*) ok "Change-Id 查不到：结果表里写明了" ;;
+            *) bad "Change-Id 查不到没进结果表：[$out]" ;;
         esac
     fi
 
