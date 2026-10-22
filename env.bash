@@ -732,6 +732,16 @@ _gerrit_project_remote () {
     return 1
 }
 
+# 内部：是不是 gerrit 的 Change-Id（`I` + 40 位十六进制）。
+# 判据和 env.zsh 的 _gr_is_changeid 一样（长度 + glob，不用正则）——
+# 两份 env 的函数表要对得上，改一处记得改另一处。
+_gr_is_changeid () {
+    local s=$1
+    (( ${#s} == 41 )) || return 1
+    [[ ${s} == I* ]] || return 1
+    [[ ${s#I} != *[^0-9a-fA-F]* ]]
+}
+
 # 内部：把 <change> 或 URL 拆成 "编号 [patchset]"（结果放 _GERRIT_CHANGE/_GERRIT_PS）
 #   认：1234 / 1234/2 / 两种 gerrit 链接 / I<40 位十六进制>（Change-Id）
 #   Change-Id 不是编号：这时 _GERRIT_CHANGEID 非空、_GERRIT_CHANGE 也等于它
@@ -756,7 +766,7 @@ _gerrit_parse_change_arg () {
         elif [[ ${raw} =~ /([0-9]+)$ ]]; then
             _GERRIT_CHANGE=${BASH_REMATCH[1]}
         fi
-    elif [[ ${raw} =~ ^I[0-9a-fA-F]{40}$ ]]; then
+    elif _gr_is_changeid "${raw}"; then
         _GERRIT_CHANGE=${raw}
         _GERRIT_CHANGEID=${raw}
     else
@@ -1004,7 +1014,7 @@ _gr_collect_args () {
         IFS=',' read -r -a toks <<< "${a}"
         for tok in "${toks[@]}"; do
             [ -z "${tok}" ] && continue
-            if [[ ${tok} =~ ^I[0-9a-fA-F]{40}$ ]]; then
+            if _gr_is_changeid "${tok}"; then
                 _GGCP_IDS+=("${tok}")
                 continue
             fi

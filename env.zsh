@@ -753,6 +753,18 @@ _gerrit_project_remote () {
     return 1
 }
 
+# 内部：是不是 gerrit 的 Change-Id（`I` + 40 位十六进制）。
+# ⚠️ 这里**故意不用 `=~`**：zsh 的正则运算要 `zsh/regex` 模块，模块加载不上时
+# zsh 会把**整段脚本直接终止**（调用方的 `-c` / 交互 shell 也不往下走），报错是
+# "failed to load module `zsh/regex'" + "-regex-match not available"。长度 + glob
+# 是内建功能，不依赖任何模块（本仓的 zsh 构建恰好 module_path 是坏的，见 README 排错段）。
+_gr_is_changeid () {
+    local s=$1
+    (( ${#s} == 41 )) || return 1
+    [[ ${s} == I* ]] || return 1
+    [[ ${s#I} != *[^0-9a-fA-F]* ]]
+}
+
 # 内部：把 <change> 或 URL 拆成 "编号 [patchset]"
 #   认：1234 / 1234/2 / 两种 gerrit 链接 / I<40 位十六进制>（Change-Id）
 #   Change-Id 不是编号：这时 _GERRIT_CHANGEID 非空、_GERRIT_CHANGE 也等于它
@@ -762,7 +774,6 @@ _gerrit_parse_change_arg () {
     local raw=$1 ps=$2 orig=$1
     typeset -g _GERRIT_CHANGE _GERRIT_PS _GERRIT_CHANGEID
     _GERRIT_CHANGEID=
-    local re_cid='^I[0-9a-fA-F]{40}$'
     if [[ ${raw} == http*://* ]]; then
         raw=${raw%%\?*}
         # 老式链接把 change 号放在 # 后面：https://host/#/c/1234/2
@@ -773,13 +784,19 @@ _gerrit_parse_change_arg () {
             raw=${raw%%#*}
         fi
         raw=${raw%/}
-        if [[ ${raw} =~ '/([0-9]+)/([0-9]+)$' ]]; then
-            _GERRIT_CHANGE=${match[1]}
-            [[ -z ${ps} ]] && ps=${match[2]}
-        elif [[ ${raw} =~ '/([0-9]+)$' ]]; then
-            _GERRIT_CHANGE=${match[1]}
+        # 取链接尾巴上的编号：`…/+/1234` -> 1234；`…/+/1234/2` -> 1234 + patchset 2。
+        # 按 `/` 切开看最后两段（不用 `=~`，理由见上面 _gr_is_changeid 的注释）。
+        local -a comp
+        # ⚠️ 必须写成 "${(@s:/:)raw}"：不加引号的话 zsh 会对每段做**文件名生成**，
+        # 链接里带 `[` / `*` 的段会被当成 glob（实测 `/c/p/foo[1]/1234` 会少一段）。
+        comp=("${(@s:/:)raw}")
+        if (( ${#comp} >= 2 )) && [[ ${comp[-1]} == <-> && ${comp[-2]} == <-> ]]; then
+            _GERRIT_CHANGE=${comp[-2]}
+            [[ -z ${ps} ]] && ps=${comp[-1]}
+        elif (( ${#comp} >= 1 )) && [[ ${comp[-1]} == <-> ]]; then
+            _GERRIT_CHANGE=${comp[-1]}
         fi
-    elif [[ ${raw} =~ ${re_cid} ]]; then
+    elif _gr_is_changeid ${raw}; then
         _GERRIT_CHANGE=${raw}
         _GERRIT_CHANGEID=${raw}
     else
@@ -1024,12 +1041,12 @@ _gr_collect_args () {
     typeset -ga _GGCP_ITEMS _GGCP_IDS
     _GGCP_ITEMS=()
     _GGCP_IDS=()
-    local a tok re_cid='^I[0-9a-fA-F]{40}$'
+    local a tok
     for a in "$@"; do
         # 逗号列表：1,2,3 -> 三个 token（空格列表由调用方的 $@ 天然拆开）
         for tok in ${(s:,:)a}; do
             [[ -z ${tok} ]] && continue
-            if [[ ${tok} =~ ${re_cid} ]]; then
+            if _gr_is_changeid ${tok}; then
                 _GGCP_IDS+=(${tok})
                 continue
             fi
@@ -1879,7 +1896,7 @@ rscur () {
     echo '==>'"${_cmd}"
     printf "total ${count} repos in ${cur_dir}, execute it? ({ENTER/Y/y}/{N/n/*}) "
     read answer
-    [[ -z "${answer}" ]] || [[ "${answer}" =~ ^(Y|y)?$ ]] && eval "${_cmd}"
+    [[ -z "${answer}" || "${answer}" == [Yy] ]] && eval "${_cmd}"
 
     unset cur_dir _answer _cmd
 }

@@ -7,6 +7,80 @@
 
 ---
 
+## ✅ 真 PTY 那 7 条一直红：`ggcp` 的拆参数依赖 zsh/regex（2026-10-23）
+
+**现象**（发布那一路实测）：`sh tests/run_tests.sh` → **615 通过 / 7 失败**（r2 备份是
+473/7，同样这 7 条 → 既有问题，不是那次改动引入的）。红的是 `for SHELL_NAME` 里
+**zsh 的"真 PTY（monitor 原本 on/off）"两块**：日志只剩 `[MON_BEFORE=on]`，
+`ggcp 四笔：退出码 0` 实际是空、`ggcp 的 stderr 是 0 字节` 实际 **207**，
+`RC=` / `MON_AFTER=` 两行根本没打出来。
+
+**根因**（两层，缺一不可）：
+
+1. `env.zsh` 的 `_gr_collect_args` / `_gerrit_parse_change_arg` 用 zsh 的 `=~` 拆参数，
+   而 `=~` 要 **`zsh/regex` 模块**；
+2. 本机 `PATH` 里 `zsh` 先命中 wtool 自己装的那份（`~/.wtool/usr/bin/zsh`），它的
+   `module_path` 是**编译期**指向 `/root/.wtool/usr/...` 的（构建时在容器里当 root 编的），
+   非 root 用户加载不了。平时交互 shell 靠 `~/.wtool/.zshenv` 把 `module_path` 修回来，
+   但**测试的 PTY 用例是 `zsh -f -i`（不读任何启动文件）**，修不上 → zsh 碰到 `=~`
+   时**不是返回错误，而是把整段 `-c` 脚本直接终止**：所以 `ggcp` 一个字没打、
+   后面的 `echo "RC=$?"` / `MON_AFTER=` 全部消失，调用方的脚本也不往下走。
+   那 207 字节就是这两行：
+
+   ```
+   _gr_collect_args:9: failed to load module `zsh/regex': /root/.wtool/usr/lib/zsh/5.9.2/zsh/regex.so: cannot open shared object file: Permission denied
+   _gr_collect_args:9: -regex-match not available for regex
+   ```
+
+   在给定环境（`PATH=/usr/bin:/bin` → 系统 zsh）里这 7 条本来是绿的（622/0），
+   所以这是**产品脆弱**，不是测试写法错：函数不该因为少一个模块就把用户的 shell 带崩。
+
+**做了什么**：
+
+- `env.zsh`：**拆参数不再用 `=~`** —— 新增内部函数 `_gr_is_changeid`（`I` + 长度 41 +
+  `[[ ${s#I} != *[^0-9a-fA-F]* ]]`），链接尾巴改成按 `/` 切段后看最后两段是不是 `<->`；
+  `rscur` 里那句 `=~ ^(Y|y)?$` 换成 `[[ -z … || … == [Yy] ]]`。`env.zsh` 里现在一个 `=~` 都没有。
+- `env.bash`：加**同名同判据**的 `_gr_is_changeid`（两份函数表保持一致），Change-Id 两处改用它；
+  其余 `=~` 是 bash 内建，不用模块，不动。
+- `tests/run_tests.sh`：
+  - 新增一条**稳定复现"模块不可用"**的回归用例：`zsh -f` + `module_path=(/nonexistent)`，
+    断言拆参数还对、Change-Id 认得出、脚本**继续跑到 `AFTER`**、退出码 0
+    （旧代码在这里会被 zsh 终止，三条断言全红）；
+  - 真 PTY 用例：stdin 显式 `</dev/null`（别再读调用方的输入）、`script` 的退出码不再
+    被管道吞掉（改成落文件后 `chk`）、跑不到 `RC=` 时自动打印 pty transcript 和
+    ggcp stderr 原文；`script` 没装时那条"跳过"写清是多少条。
+
+**验证到什么程度**：
+
+- `sh tests/run_tests.sh` → **630 通过 / 0 失败**（+8 条断言）。**两套 zsh 都跑过**：
+  系统 zsh（`PATH=/usr/bin:/bin`）和 `~/.wtool/usr/bin/zsh`（
+  `ZDOTDIR=~/.wtool WTOOL_HOME=~/.wtool PATH=~/.wtool/usr/bin:…`）——
+  后者就是原来 615/7 的那套环境，现在也是 630/0。
+- 复现原始症状的最小命令（不跑整套测试）：`zsh -f -c 'module_path=(/nonexistent);
+  [[ x =~ y ]]; echo 这行不会打出来'` → 两行模块报错 + 退出码 2；把 `=~` 换成
+  `[[ x == <-> ]]` 就正常。旧版 `env.zsh` 用这条路径跑 `ggcp` 得到的就是 207 字节 stderr。
+- 拆参数的**新旧行为逐一对照**过（14 个输入：裸编号 / `N/M` / 逗号列表 / 两种链接 /
+  带 `?`/`#` / 40 位与不足 40 位的 Change-Id），`_GERRIT_CHANGE`/`_GERRIT_PS`/
+  `_GERRIT_CHANGEID`/退出码全部一致。
+
+**判据（可原地重跑）**：
+
+```sh
+cd ~/self/wtool/tools/git-repo-sh-tools && sh tests/run_tests.sh        # 630 通过, 0 失败
+env ZDOTDIR=~/.wtool WTOOL_HOME=~/.wtool PATH=~/.wtool/usr/bin:/usr/bin:/bin \
+    sh tests/run_tests.sh                                               # 也是 630 通过, 0 失败
+```
+
+**没做/没验**：
+
+- **没修 `shell/zsh` 的 `module_path`**（编译期指向 `/root/.wtool/usr`）—— 不在本仓范围；
+  本仓只是做到"不依赖它"。那个坑修好之前，别在 `env.zsh` 里再用 `=~`。
+- 没在容器/真公司机上跑过；两套 zsh 都是本机的（5.9.2）。
+- `script(1)` 起不了 pty 的机器上，那 12 条真 PTY 用例仍然是**跳过**（会打印原因），
+  没有做成"假绿"。
+
+---
+
 ## ✅ `ggcp` 同 Change-Id 预检 + 新命令 `ggrvt`（2026-10-22）
 
 **用户原话**："`ggcp` 命令，对同一个提交，比如 `1234` 执行 `ggcp 1234/1` 和

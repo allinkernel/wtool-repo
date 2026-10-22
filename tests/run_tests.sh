@@ -852,6 +852,36 @@ cdd .... >/dev/null 2>&1 && pwd'
     _collect '1,https://g.example.com/#/c/2,3' '1|,2|,3|' 0
     _collect 'I1111111111111111111111111111111111111111' '' 1
     _collect '1,I1111111111111111111111111111111111111111,2' '1|,2|' 1
+
+    # ---- 不许依赖 zsh 的启动文件 / zsh/regex 模块（2026-10-23 修那 7 条真 PTY 红）----
+    # 背景：`zsh -f` 不读 .zshenv；本仓自带的 zsh 构建（~/.wtool/usr/bin/zsh）编译期
+    # module_path 指向 /root，于是 `=~`（要 zsh/regex 模块）加载不上 —— **zsh 会把
+    # 整段 -c 脚本直接终止**，调用方的 shell 也不往下走。真 PTY 那组原来就是这么红的：
+    # ggcp 一个字没打、后面 RC=/MON_AFTER= 全没出来、stderr 正好 207 字节。
+    # 这里把 module_path 指到空目录，**稳定复现"模块不可用"**（不依赖本机 zsh 构建成什么样）：
+    # 拆参数必须还对，而且脚本必须继续跑到 AFTER。
+    if [ "$SHELL_NAME" = zsh ]; then
+        cat > "$T/norc.zsh" <<EOF
+module_path=(/nonexistent)
+WTOOL_PROJECT_DIR='$here/..'
+. "\$WTOOL_PROJECT_DIR/env.zsh"
+_gr_collect_args 1234/2 https://g.example.com/c/p/+/5678/3 I1111111111111111111111111111111111111111
+printf 'ITEMS=%s\n' "\${(j:,:)_GGCP_ITEMS}"
+printf 'IDS=%s\n' "\${(j:,:)_GGCP_IDS}"
+ggcp abc 2>/dev/null
+printf 'AFTER=%s\n' ok
+EOF
+        zf_rc=0
+        zf_out=$("$SHELL_BIN" -f "$T/norc.zsh" 2>&1) || zf_rc=$?
+        chk "zsh -f + 没有 zsh/regex 模块：拆参数照样对" \
+            "$(printf '%s\n' "$zf_out" | sed -n 's/^ITEMS=//p')" "1234|2,5678|3"
+        chk "zsh -f + 没有 zsh/regex 模块：Change-Id 也认得出来" \
+            "$(printf '%s\n' "$zf_out" | sed -n 's/^IDS=//p')" \
+            "I1111111111111111111111111111111111111111"
+        chk "zsh -f + 没有 zsh/regex 模块：不会再带崩调用方的脚本" \
+            "$(printf '%s\n' "$zf_out" | sed -n 's/^AFTER=//p')" "ok"
+        chk "zsh -f + 没有 zsh/regex 模块：整段脚本退出码 0" "$zf_rc" "0"
+    fi
     srun '_gr_collect_args abc'
     chk "ggcp 乱参数：退出码 2" "$rc" "2"
     case $out in
@@ -892,7 +922,9 @@ $1
 EOF
             rc=0
             # env -u NO_COLOR：见上面那条注释（环境自带 NO_COLOR 时这里测不出 tty 规则）
-            out=$(script -qec "env -u NO_COLOR $SHELL_NAME $T/p.script" /dev/null 2>&1 | tr -d '\r') || rc=$?
+            # `</dev/null`：别把调用方的 stdin 喂进伪终端（那会变成 shell 的"命令"）
+            out=$(script -qec "env -u NO_COLOR $SHELL_NAME $T/p.script" /dev/null \
+                2>&1 </dev/null | tr -d '\r') || rc=$?
         }
         pty_eval '_gr_green 打补丁成功'
         case $out in
@@ -1445,6 +1477,35 @@ EOF
         # `-ic "$(cat body)"`（当命令敲）才复现得出来；`-ic 'source body'`
         # 实测不打启动提示，拿它测等于没测。zsh 两条路都会打。
         if command -v script >/dev/null 2>&1; then
+            # 起一个真 PTY 跑 $1（片段文件），transcript 落到 $2；pty_rc = 那个交互 shell
+            # 的退出码（script -e 会把它带回来），pty_out = 去掉 \r 后的 transcript。
+            #
+            # ⚠️ `</dev/null` 不能省：不给 stdin 时 script 会去读**调用方**的输入再喂进
+            #    伪终端，那会在 shell 里变成"命令"。以前能绿只是因为调用方恰好没输入。
+            # ⚠️ 也不要写成 `script … | tr`：那样 `$?` 是 tr 的，shell 自己的退出码就丢了
+            #    （2026-10-23 那 7 条红时它其实非 0，但测试没看它）。
+            pty_run () {
+                if script -qec "$SHELL_BIN $SHELL_RC_FLAG -i -c \"\$(cat '$1')\"" \
+                        /dev/null > "$2" 2>&1 < /dev/null; then
+                    pty_rc=0
+                else
+                    pty_rc=$?
+                fi
+                pty_out=$(tr -d '\r' < "$2")
+            }
+            # 万一 pty 里的 shell 没跑到 RC= 那行（stdin 被灌了东西、脚本被终止、
+            # script 自己起不来……），把现场直接打出来 —— 否则日志里只剩
+            # "[MON_BEFORE=on]"，看的人得从头猜。
+            pty_diag () {   # $1 = 说明；$2 = ggcp 的 stderr 文件
+                case $(printf '%s\n' "$pty_out") in
+                    *RC=*) return 0 ;;
+                esac
+                echo "  ---- PTY 诊断（$1，交互 shell 退出码 $pty_rc）----"
+                printf '  pty_out 末尾：%s\n' "$(printf '%s\n' "$pty_out" | tail -3 | tr '\n' ' ')"
+                printf '  ggcp stderr（%s 字节）：%s\n' \
+                    "$(wc -c < "$2" | tr -d ' ')" \
+                    "$(head -c 400 "$2" | tr '\n' ' ')"
+            }
             # (a) monitor 原本 on：跑完必须还是 on；stderr 0 字节；终端只有表
             ggcp_reset
             cat > "$T/ggcp-pty.$SHELL_NAME" <<EOF
@@ -1459,10 +1520,11 @@ echo "RC=\$?"
 $MEASURE_MON
 echo "MON_AFTER=\$MON"
 EOF
-            pty_rc=0
-            pty_out=$(script -qec "$SHELL_BIN $SHELL_RC_FLAG -i -c \"\$(cat '$T/ggcp-pty.$SHELL_NAME')\"" /dev/null 2>&1 | tr -d '\r') || pty_rc=$?
+            pty_run "$T/ggcp-pty.$SHELL_NAME" "$T/ggcp-pty.out.$SHELL_NAME"
+            pty_diag "monitor 原本 on" "$T/ggcp-pty.err.$SHELL_NAME"
             chk "真 PTY（monitor 原本 on）ggcp 四笔：退出码 0" \
                 "$(printf '%s\n' "$pty_out" | sed -n 's/^RC=//p' | tail -1)" "0"
+            chk "真 PTY（monitor 原本 on）：交互 shell 自己干净退出（0）" "$pty_rc" "0"
             chk "真 PTY（monitor 原本 on）：跑前是 on" \
                 "$(printf '%s\n' "$pty_out" | sed -n 's/^MON_BEFORE=//p' | tail -1)" "on"
             chk "真 PTY（monitor 原本 on）：跑完还是 on（没动用户的作业控制）" \
@@ -1493,10 +1555,11 @@ echo "RC=\$?"
 $MEASURE_MON
 echo "MON_AFTER=\$MON"
 EOF
-            pty_rc=0
-            pty_out=$(script -qec "$SHELL_BIN $SHELL_RC_FLAG -i -c \"\$(cat '$T/ggcp-pty2.$SHELL_NAME')\"" /dev/null 2>&1 | tr -d '\r') || pty_rc=$?
+            pty_run "$T/ggcp-pty2.$SHELL_NAME" "$T/ggcp-pty2.out.$SHELL_NAME"
+            pty_diag "monitor 原本 off" "$T/ggcp-pty2.err.$SHELL_NAME"
             chk "真 PTY（monitor 原本 off）ggcp 四笔：退出码 0" \
                 "$(printf '%s\n' "$pty_out" | sed -n 's/^RC=//p' | tail -1)" "0"
+            chk "真 PTY（monitor 原本 off）：交互 shell 自己干净退出（0）" "$pty_rc" "0"
             chk "真 PTY（monitor 原本 off）：跑前是 off" \
                 "$(printf '%s\n' "$pty_out" | sed -n 's/^MON_BEFORE=//p' | tail -1)" "off"
             chk "真 PTY（monitor 原本 off）：跑完还是 off（没被恢复成 on）" \
@@ -1505,7 +1568,8 @@ EOF
                 "$(wc -c < "$T/ggcp-pty2.err.$SHELL_NAME" | tr -d ' ')" "0"
             ggcp_reset
         else
-            echo "  （没装 script，真 PTY 的 job 控制噪声用例跳过）"
+            echo "  （没装 script(1)，真 PTY 那一组（颜色/表格/作业控制噪声/退出码）跳过 ——"
+            echo "    它们只能在有 pty 的机器上跑，没有就大声说，不静默跳过）"
         fi
 
         # ---- 文件冲突：逐文件写出来，然后 --abort 收干净 ----

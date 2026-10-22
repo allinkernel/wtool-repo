@@ -72,6 +72,11 @@ GitHub 仓库名仍是 `allinkernel/wtool-repo`，2026-10-04 由 `tools/repo` �
 - `_gerrit_parse_change_arg` 也认裸 Change-Id：置 `_GERRIT_CHANGEID`，
   `_GERRIT_CHANGE` 也等于它（`change:<Change-Id>` 在 gerrit query 里合法）。
   Change-Id 不许再跟 patchset（返回 2）。
+- **参数解析不用 zsh 的 `=~`**（2026-10-23 修）：`=~` 要 `zsh/regex` 模块，模块装不上时
+  zsh 会把**整段 `-c` 脚本直接终止**（不是返回错误，是连调用方后面的命令都不执行）。
+  Change-Id 用 `_gr_is_changeid`（`I` + 长度 41 + `[[ ${s#I} != *[^0-9a-fA-F]* ]]`），
+  链接尾巴按 `/` 切段后看最后两段是不是 `<->`（数字）。`env.bash` 有同名同判据的
+  `_gr_is_changeid`，两份函数表保持一致；bash 那边其余的 `=~` 是 bash 内建，不用模块。
 - `_gr_expand_changeids`：`_gerrit_query_capture <Change-Id>` → `gerrit_query.py commits`
   把**每个 patchset 各一行**（`number patchset project revision ref url branch`）→ 用
   `_repo_project_relpath` 给每个项目算本地路径 → `gerrit_query.py table --path-map <文件>`

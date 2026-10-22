@@ -763,6 +763,8 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 | 结果表里 `工作树有本地改动（先 stash/commit）` | 这个仓库有已跟踪文件的改动；`git stash` 或 `git commit` 后再跑（未跟踪文件不影响） |
 | `ggcp: N 不是提交编号、gerrit 链接或 Change-Id`（返回 2） | 参数不对；`ggcp -h` 看用法 |
 | `ggcp: Change-Id 'I…' 不能指定 patchset（它对应很多个提交）`（返回 2） | 要指定 patchset 就用编号：`ggcp 1234/2` |
+| `ggcp` / `ggrvt` / `cdd -N` **一个字都不打**，stderr 里是 `failed to load module 'zsh/regex'` + `-regex-match not available`，而且**调用它们的脚本/shell 也不再往下走** | 老版 `env.zsh` 用 zsh 的 `=~` 拆参数，它要 `zsh/regex` 模块。模块装不上时（本仓自带的 zsh 构建 `module_path` 指向 `/root/...`，`zsh -f` 又不读能修它的 `.zshenv`）zsh 会把**整段 `-c` 脚本直接终止**。**2026-10-23 已修**：拆参数改成 `length + glob`（`_gr_is_changeid` / 按 `/` 切段），不再依赖任何 zsh 模块。复现那条 zsh 行为：`zsh -f -c 'module_path=(/nonexistent); [[ x =~ y ]]; echo 这行不会打出来'`（退出码 2）。**再看到这条，说明 env.zsh 又被人改回 `=~` 了** |
+| `sh tests/run_tests.sh` 里"真 PTY（monitor 原本 on/off）"那 7 条红：日志只剩 `[MON_BEFORE=on]`、`ggcp 的 stderr 是 0 字节` 实际 **207** | 就是上一条在测试里的样子（207 = 那两行模块报错的字节数）。现在测试自带诊断：跑不到 `RC=` 那行时会把 pty transcript 末尾和 ggcp 的 stderr 原文打出来。修完后**两套 zsh（系统 / `~/.wtool/usr/bin/zsh`）都是 630 通过 0 失败**，不再需要收窄 PATH |
 | `ggco: 工作树有本地改动，先 git stash 或 git commit（本命令不覆盖本地改动）：` | 先把已跟踪文件的改动 stash / commit 掉；未跟踪文件不影响它 |
 | `ggco: 远端没有这个 ref（或取不到）：<remote> <ref>` | ref 名拼错、或 fetch 本身失败（网络/权限）。按提示 `git ls-remote --heads --tags <remote>` 看远端有什么 |
 | `ggco: 本地分支 X 停在 A，不是刚 fetch 的 B` | 本地同名分支和远端不一致；本命令**不会**替你 reset。按提示 `git merge --ff-only FETCH_HEAD`，或自己决定怎么处理 |
@@ -781,9 +783,9 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 ## 测试
 
 ```sh
-sh tests/run_tests.sh      # 622 条（六段合计，以脚本最后打印的通过/失败数为准；
-                           #   2026-10-22 实测 622 通过 0 失败 —— 这一版加了
-                           #   ggcp 的同 Change-Id 预检 + ggrvt，+142 条）
+sh tests/run_tests.sh      # 630 条（六段合计，以脚本最后打印的通过/失败数为准；
+                           #   2026-10-23 实测 630 通过 0 失败 —— 这一版修了"真 PTY 那 7 条红"
+                           #   （不再依赖 zsh/regex，+8 条断言）；上一版 622）
 ```
 
 测试分六段（都在临时目录里造"公司环境"的假工作区 / 假裸仓 / 假 gerrit，不碰真工作区、不连网）：
@@ -851,7 +853,13 @@ sh tests/run_tests.sh      # 622 条（六段合计，以脚本最后打印的�
    - **stderr / 作业控制噪声**：成功路径 `stderr` 必须 **0 字节**（单独收集，不和
      stdout 混）；再用 `script(1)` 起**真 PTY 的交互式 shell**（monitor 是 on）跑一遍，
      断言终端里没有 `[1] 12345` / `[1]+ Done` / `no job control`，且跑完
-     `monitor`/`notify` 保持原值（原本 on 还是 on、原本 off 还是 off）。
+     `monitor`/`notify` 保持原值（原本 on 还是 on、原本 off 还是 off）。pty 的 stdin
+     显式接 `/dev/null`，交互 shell 自己的退出码也要是 0；跑到不 `RC=` 那行时会自动
+     把 pty transcript 和 ggcp 的 stderr 打出来（2026-10-23 那 7 条红就靠这个一眼看出来）；
+   - **不依赖 zsh 启动文件 / `zsh/regex` 模块**：`zsh -f`（不读 `.zshenv`）+ 把
+     `module_path` 指到空目录（**稳定复现"模块装不上"**，不挑机器）跑一遍
+     `_gr_collect_args` —— 拆参数必须还对、Change-Id 也认得出来、而且**脚本必须继续
+     往下跑**（老版会在这里被 zsh 直接终止）。这条钉住"拆参数不许再用 `=~`"。
 
 夹具故意造成"公司环境"的样子：**没有 `.repo/repo`**、清单里有 `<include>`、
 `local_manifests` 里 `remove-project` / 覆盖 revision。
@@ -861,10 +869,11 @@ sh tests/run_tests.sh      # 622 条（六段合计，以脚本最后打印的�
 > **不读写真 `$HOME`**，也不受用户全局 `insteadOf` / `pull.rebase` 之类的影响。
 >
 > ⚠️ 本机 PATH 里 `zsh` 可能先命中 wtool 自己装的那份（`~/.wtool/usr/bin/zsh`，
-> 它的 `module_path` 指向 `/root/...`，`zsh/regex` 加载不了，测试会大面积红）。
-> 跑测试时把 PATH 收干净，例如
-> `env $(env | sed -n 's/^\(WTOOL[A-Z_]*\)=.*/-u \1/p') PATH=/usr/bin:/bin sh tests/run_tests.sh`
-> （用系统 `/usr/bin/zsh`）—— 这是环境问题，不是代码问题。
+> 它的 `module_path` 编译期指向 `/root/...`，所以 `zsh/regex` 模块加载不了）。
+> 2026-10-23 之前 env.zsh 用 `=~` 拆参数，在这种 zsh 下会大面积红，只能把 PATH 收干净
+> 去用系统 zsh：`env $(env | sed -n 's/^\(WTOOL[A-Z_]*\)=.*/-u \1/p') PATH=/usr/bin:/bin sh tests/run_tests.sh`。
+> **现在两份 zsh 都实测 630 通过 / 0 失败**（上面那条"不依赖 zsh/regex"的用例专门钉它），
+> 但那条 `module_path` 指向 `/root` 的构建问题还在 `shell/zsh` 那边，本仓不碰。
 
 ## 依赖
 

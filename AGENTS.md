@@ -86,18 +86,27 @@
 ## 3. 验证（改完必须跑）
 
 ```sh
-sh tests/run_tests.sh      # 622 条，应该全绿（以脚本最后打印的通过/失败数为准；
-                           #   2026-10-22 实测 622 通过 0 失败（这一版加了 ggcp 的
-                           #   同 Change-Id 预检 + ggrvt，+142 条；
-                           #   上一版 480：ggcp 的 stderr=0 / 真 PTY 作业控制噪声）
+sh tests/run_tests.sh      # 630 条，应该全绿（以脚本最后打印的通过/失败数为准；
+                           #   2026-10-23 实测 630 通过 0 失败（这一版修了"真 PTY 那 7 条红"：
+                           #   env.zsh 不再用 =~，+8 条断言；两套 zsh 都实测过）
+                           #   上一版 622（ggcp 同 Change-Id 预检 + ggrvt，+142）；
+                           #   再上一版 480（ggcp 的 stderr=0 / 真 PTY 作业控制噪声）
                            #   这个数字常变，只有它**跑出来**的 PASS/FAIL 行算数，别手抄）
                            #
                            #   ⚠️ 本机 PATH 里 `zsh` 可能先命中 ~/.wtool/usr/bin/zsh
-                           #   （module_path 指向 /root，zsh/regex 加载不了 → 大面积红）。
-                           #   用系统 zsh：
+                           #   （编译期 module_path 指向 /root，zsh/regex 加载不了）。
+                           #   2026-10-23 起 env.zsh 不依赖 zsh/regex，不用再收窄 PATH；
+                           #   想跑"旧行为对照"可以用系统 zsh：
                            #   env $(env | sed -n 's/^\(WTOOL[A-Z_]*\)=.*/-u \1/p') \
                            #       PATH=/usr/bin:/bin sh tests/run_tests.sh
 ```
+
+- 🔴 **`env.zsh` 里不许用 `=~`**（2026-10-23）：zsh 的正则要 `zsh/regex` 模块，
+  模块装不上时 zsh 会把**整段 `-c` 脚本终止**（调用方的 shell/脚本也不往下走，报错是
+  `failed to load module 'zsh/regex'` + `-regex-match not available`）。拆参数一律用
+  `[[ … == <-> ]]` / `length + glob`（`_gr_is_changeid`）。测试里有一条
+  `zsh -f` + `module_path=(/nonexistent)` 的用例专门钉它，删了这条等于把坑放回去。
+
 
 - 三段：`my_repo.py`、`gerrit_query.py`、`env.zsh`/`env.bash` 对比（同一张用例表跑两个 shell）。
 - **不连网**：gerrit 相关的用例只测"拆参数"，别把真 ssh 塞进测试。
