@@ -43,7 +43,8 @@
 | git | `gpun [<深度>\|--depth=<深度>]` | 把 `gb` 打印的 `git pull <remote> <branch> --unshallow` **真的跑掉**（带深度就换成 `--depth=<深度>`） |
 | git | `gbb` | 按 `gb` 给出的命令**真的推**（公司 gerrit 环境可切成送检） |
 | git | `ggco <分支\|tag\|commit>` | 抓远端某个 ref 下来并**直接切过去**（fetch → checkout） |
-| gerrit | `ggcp <编号\|链接\|Change-Id> ...` | 把 gerrit 上的提交抓回本地、按仓库并行/串行 cherry-pick；**并行查询、结果按仓库聚拢成一张表**（支持多编号 / 跨仓库 / 链接 / Change-Id） |
+| gerrit | `ggcp <编号\|链接\|Change-Id> ...` | 把 gerrit 上的提交抓回本地、按仓库并行/串行 cherry-pick；**并行查询、结果按仓库聚拢成一张表**（支持多编号 / 跨仓库 / 链接 / Change-Id）；**同 Change-Id 已在本地历史时该行失败**并提示 `ggrvt` |
+| gerrit | `ggrvt <编号\|链接\|Change-Id>` | 把本地历史里**同 Change-Id 的那个提交** `git revert` 掉（**不接受 patchset**）；给 `ggcp` 重新打这个 change 的新 patchset 用 |
 | gerrit | `gchk <change>` | 这个 change 有没有 +2 / 有没有 merged（决定能不能推 main） |
 | gerrit | `gq [-r] <change>` | change 摘要（`-r`/`--raw` 出原始 JSON） |
 | gerrit | `gpush [remote]` | 把当前 HEAD 推到 `refs/for/<清单声明的分支>`（默认 remote `polygerrit`） |
@@ -256,7 +257,7 @@ gpun --depth=30   # 同上（等价写法）
      改法就是脚本里那个 `need_to_review=1`，见代码注释）。
 3. 依赖 GNU grep 的 `-P`（PCRE）。
 
-### 6. 抓取与 gerrit：`ggco` / `ggcp` / `gchk` / `gq` / `gpush`
+### 6. 抓取与 gerrit：`ggco` / `ggcp` / `ggrvt` / `gchk` / `gq` / `gpush`
 
 #### `ggco <分支|tag|commit>` —— 抓远端一个 ref，直接切过去
 
@@ -314,7 +315,8 @@ sshkey=~/.ssh/id_rsa
 ```
 
 默认值：`port` 没给就是 `29418`，`user` 没给就是 `$USER`。都找不到时 `ggcp` 会打印
-`ggcp: 不知道 gerrit 服务器在哪。请任选一种方式告诉它：` 加三条途径，返回 1。
+`ggcp: 不知道 gerrit 服务器在哪。请任选一种方式告诉它：` 加三条途径，返回 1
+（`ggrvt` 同一条报错，前缀换成 `ggrvt:` —— 报错前缀跟着敲的命令走）。
 
 #### `ggcp <编号|链接|Change-Id> ...`
 
@@ -404,7 +406,8 @@ platform/other  other     088d75bf36eb  1         成功
 | 情况 | 结果说明 | 说明 |
 |---|---|---|
 | cherry-pick 成功 | `成功` | — |
-| cherry-pick 失败，且 `git status` **为空** | `此提交本地已经有了（可能已合入）` | 空提交/已经合入，没产生冲突文件 |
+| **同一个 Change-Id 已经在本地历史里** | `此 Change-Id 已在本地历史（提交 <短 sha>，patchset <n>）→ 先 ggrvt <编号> 回退，再打 <编号>/<patchset>` | **不 fetch、不 cherry-pick**，该行算失败；先 `ggrvt` 回退旧的那个（见下）。历史里同名 Change-Id 有好几个提交时改成列出全部 SHA + `ggrvt <编号> 会拒绝回退，请手工处理` |
+| cherry-pick 失败，且 `git status` **为空** | `此提交本地已经有了（可能已合入）` | 空提交/已经合入，没产生冲突文件。**没有 Change-Id 的提交**走这条（有 Change-Id 的会被上面的预检先拦下，根本走不到 cherry-pick） |
 | cherry-pick 失败，且 `git status` **有文件** | `<文件1> <文件2> … 文件冲突` | 逐个列出冲突文件（如 `ps1.txt 文件冲突`） |
 | 其它失败（fetch / 校验 / 进不了目录 …） | `下载失败：<关键 stderr 行>` / `抓到的 commit（X）和 gerrit 说的（Y）不一致` / `项目目录不存在：X（先 repo sync X）` / `本地清单里没有项目 X` / `查询失败：<关键 stderr 行>` | 只取关键行，不把整段 git/ssh 输出塞进表格 |
 | 工作树原本就有已跟踪文件的改动 | `工作树有本地改动（先 stash/commit）` | **不动**这样的工作树；先自己 stash/commit |
@@ -415,6 +418,42 @@ platform/other  other     088d75bf36eb  1         成功
 `git status --porcelain --untracked-files=no`，确认工作树回到打补丁前的状态。
 万一 `--abort` 失败就用 `git cherry-pick --quit` 清状态，并在结果里加
 `（工作树没清干净，请手工处理）` —— 不会悄悄把冲突态留给你。
+
+##### 同 Change-Id 预检：本地已经有了就不打
+
+**为什么有这条**：`ggcp 1234/1` 打过 ps1 之后，再 `ggcp 1234/2` —— ps2 只是比 ps1
+多改了一个文件，`git cherry-pick` 会**成功**，于是 `git log` 里出现**两个同
+Change-Id 的提交**（推 gerrit 时就成了同一笔的重复提交）。所以现在进 cherry-pick
+之前先查本地历史：
+
+1. 在**目标仓库里**（已经 `cd` 到项目目录）用
+   `git log --format=%H --grep='^Change-Id: <Change-Id>$'` 找**同 Change-Id** 的提交；
+   Change-Id 是 gerrit query 返回的（新版 gerrit 的 `change_id`，老版从
+   `id`（`project~branch~I…`）里拆出来）；
+2. 找到了就**不再 fetch、不再 cherry-pick**，该行结果写清楚，并且**该行算失败**
+   （整条命令返回 **1**，其它仓库 / 其它 change 照常处理，不会因为一个失败就全停）：
+
+   ```text
+   此 Change-Id 已在本地历史（提交 68dd4339ead8，patchset 1）→ 先 ggrvt 1234 回退，再打 1234/2
+   ```
+
+   "patchset 1"是**比出来的**：把这个 change 的所有 patchset ref 一次 fetch 下来
+   （只下对象），再和本地那个提交比 `git patch-id`（同一个补丁 cherry-pick 之后
+   patch-id 不变）。认不出就只写到"提交 <sha>"为止；
+3. **同一个 Change-Id 在本地有多个提交**（历史遗留）时，报错里列出**全部** SHA，并提示
+   `ggrvt 1234 会拒绝回退，请手工处理` —— `ggrvt` 只会回退"恰好一个"的情况。
+
+> **已经被 `ggrvt` 回退掉的提交不算"还在"**：`git revert` 不会删历史，那个提交
+> 连同它的 `Change-Id:` 行还躺在 `git log` 里。预检会把"被 revert 掉的"剔掉
+> （依据 revert 提交里的 `This reverts commit <sha>.` 那行），所以 `ggrvt` 之后
+> `ggcp 1234/2` 就能打了，而且**有效的同 Change-Id 提交始终只有一个**。
+>
+> 已知边界：把 revert 再 revert 回来（补丁重新生效），预检认不出来，仍按
+> "已被回退"处理 —— 这种情况下先手工 `git log` 确认。
+>
+> 不带 patchset 的 `ggcp 1234` 行为和以前一样；`ggcp 1234/1` **重复打**同样命中
+> 这条预检（同 Change-Id 已经在历史里了），结果是失败 + `ggrvt` 提示，而不是
+> "空提交成功"。
 
 ##### 退出码与失败隔离
 
@@ -460,7 +499,10 @@ platform/other  other     088d75bf36eb  1         成功
 - 答 `y` 就打，回车/`n` 跳过，`q` = 不再问了（剩下的都跳过）；
 - **stdin 不是 tty**（比如 `printf 'y\nn\n' | ggcp …`）时读不到就按"跳过"处理，不会挂住；
 - 选择表里的"路径"是本地的工作区相对路径，找不到时写 `（目录不存在）` / `（不在本地清单里）`；
-- 选完之后，答应打的那几笔走上面同一套两阶段流程，最后再打**结果表**。
+- 选完之后，答应打的那几笔走上面同一套两阶段流程，最后再打**结果表**；
+- ⚠️ 同一个 Change-Id 的**多个 patchset 连着答应打**时，只有第一个会成功：第一个打上之后，
+  后面的都会被"同 Change-Id 已在本地历史"预检拦下（**这正是想要的** —— 它们互相覆盖，
+  全打上就是两个同 Change-Id 的提交）。要换 patchset 就先 `ggrvt <编号>` 回退旧的。
 
 它做的事（每一步都能在 `env.zsh` 里找到）：
 
@@ -474,9 +516,96 @@ platform/other  other     088d75bf36eb  1         成功
    并算本地路径；
 3. **阶段 2**：按项目分组，每个仓库一个后台 `_gr_repo_batch`；仓库内部逐个提交
    `cd` 到项目目录、选 remote（`polygerrit` → 清单声明的 → 第一条）、
+   **先做同 Change-Id 预检**（命中就写失败行，**不 fetch、不 cherry-pick**）、
    `git fetch <remote> <ref>`、核对 `FETCH_HEAD == revision`、`git cherry-pick <revision>`；
 4. 失败时按上面三种分类写 `结果说明`，必要时 `git cherry-pick --abort`，继续下一笔；
 5. 所有仓库结束后合并 `rows.*`，打**总述 + 一张表**，按有没有失败返回 0 / 1。
+
+#### `ggrvt <编号|链接|Change-Id>` —— 回退本地那笔（`ggcp` 预检叫你来的）
+
+```sh
+ggrvt 1234                                        # 回退本地历史里 change 1234 那个提交
+ggrvt https://gerrit.company.com/c/proj/+/1234    # 链接也认
+ggrvt I1111111111111111111111111111111111111111   # 按 Change-Id 也认
+ggrvt 1234/2                                      # ✗ 不接受 patchset（返回 2）
+```
+
+只做一件事：在本地把**同 Change-Id 的那个提交** `git revert --no-edit <sha>` 掉
+（`LC_ALL=C`，让 revert 消息里的 `This reverts commit <sha>.` 永远是英文 ——
+`ggcp` 的预检靠这行认出"这个提交已经被回退过"）。**不动远端、不 reset、不改别的提交、
+不碰工作树里别的改动。**
+
+它做的事：
+
+1. **查 gerrit 拿项目名**：`_gr_query_info`（和 `ggcp` / `cdd -N` 同一份查询函数，不复制
+   ssh/JSON 代码）；编号 / 两种 gerrit 链接 / Change-Id 都认（复用
+   `_gerrit_parse_change_arg`），但**一次只接一个 change、且不接受 patchset**。
+   给 **Change-Id** 时要求它在 gerrit 上**唯一对应一个 change**；同一个 Change-Id 横跨
+   多个分支 / 项目时（gerrit 会回多条）不替你挑，报
+   `Change-Id I… 对应 N 个提交（可能跨分支/项目），请改用编号` —— 换成编号再来；
+2. **定位仓库**：和 `cdd -N` 一样 —— gerrit 给项目名 → 本地清单给路径 → `cd` 过去。
+   清单里没有 / 目录没检出 / 不在 repo 工作区里都明确报错；
+3. 在项目目录里用 `git log --format=%H --grep='^Change-Id: <id>$'` 找本地提交，
+   **被 revert 掉的算没有**（所以重复回退不会把同一个提交 revert 两次）；
+4. 结果分三种：
+   - **恰好一个** → `git revert --no-edit <sha>`；成功后打一行：
+     `已回退 68dd4339ead8（change 1234, patchset 1）→ 现在可以 ggcp 1234/2`
+     （patchset 那个数还是比 `git patch-id` 认出来的，认不出就只写 change 号；
+     建议的 patchset 是 gerrit 上的 **current**）；
+   - **零个** → `ggrvt: 本地历史里没有该 Change-Id 的提交（change 1234 还没打上？）`
+     + `先 ggcp 1234`，返回 **1**；
+   - **多个** → `ggrvt: 本地历史里有 N 个同 Change-Id 的提交，不敢替你决定回退哪个：`
+     跟着**逐个列出 SHA + subject**，**不擅自 revert**，返回 **1**（自己挑一个
+     `git revert --no-edit <sha>`）。
+5. **冲突 / 失败**：先 `git revert --abort`（**只用 `--abort`，绝不 `reset --hard`**）把
+   中间态收干净，再报 `ggrvt: 回退 <sha> 失败：<关键行>`，返回 **1**；工作树真的没清干净
+   会额外打 `工作树没清干净，请手工处理：` + `git status` 那几行。
+
+| 退出码 | 含义 |
+|---|---|
+| 0 | 回退成功（stdout 只有一行，**stderr 0 字节**） |
+| 1 | 查不到 / 项目没检出 / 零命中 / 多命中 / 工作树脏 / revert 冲突（原因都在 stderr） |
+| 2 | 参数不对（没给、给多了、给了 patchset、给了列表、认不出来） |
+
+##### 完整工作流：先 1 后 2（失败）→ 回退 → 再打 2（成功）
+
+```sh
+$ ggcp 1234/1
+1 个仓库 / 1 笔提交 / 成功 1 / 失败 0
+项目名          项目路径  提交 id       patchset  结果说明
+--------------  --------  ------------  --------  --------
+platform/mylib  mylib     68dd4339ead8  1         成功
+
+$ ggcp 1234/2                  # ← 同一个 Change-Id 已经在本地历史里
+1 个仓库 / 1 笔提交 / 成功 0 / 失败 1
+项目名          项目路径  提交 id       patchset  结果说明
+--------------  --------  ------------  --------  -------------------------------------------------------------------------------------------
+platform/mylib  mylib     7662edd59300  2         此 Change-Id 已在本地历史（提交 68dd4339ead8，patchset 1）→ 先 ggrvt 1234 回退，再打 1234/2
+
+$ ggrvt 1234
+已回退 68dd4339ead8（change 1234, patchset 1）→ 现在可以 ggcp 1234/2
+
+$ ggcp 1234/2
+1 个仓库 / 1 笔提交 / 成功 1 / 失败 0
+项目名          项目路径  提交 id       patchset  结果说明
+--------------  --------  ------------  --------  --------
+platform/mylib  mylib     7662edd59300  2         成功
+```
+
+对应的 `git log --oneline`（证明不会出现两个**有效**的同 Change-Id 提交）：
+
+```text
+打完 1234/1              被预检拦下              ggrvt 之后             重打 1234/2 之后
+68dd433 ps1             68dd433 ps1            d15b0a6 Revert "…"     3035853 ps2
+213fe42 base            213fe42 base           68dd433 ps1            d15b0a6 Revert "…"
+                                                213fe42 base           68dd433 ps1
+                                                                       213fe42 base
+```
+
+> `git revert` **不删历史**：ps1 那个提交（以及它的 `Change-Id:` 行）一直在 `git log`
+> 里。所以"同 Change-Id 提交只有一个"指的是**有效的**只有一个 —— `ggcp` 的预检把
+> 被 revert 掉的剔掉，`ggrvt` 回退之后就能重新打。重打完再 `ggcp 1234/2` 仍然会被
+> 预检拦下，这也是断言里钉着的。
 
 #### `gchk <change>` —— 能不能推 main
 
@@ -620,7 +749,14 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 | `ggcp: 不知道 gerrit 服务器在哪。请任选一种方式告诉它：` | 按提示设 `WTOOL_GERRIT_HOST` / 写 `~/.wtool/gerrit.conf` / 放 `<repo 根>/.gerrit/client.conf` |
 | 结果表里 `查询失败：连 <user>@<host>:<port> 查询 change N 失败` | ssh 不通或公钥没在 gerrit 登记；先手敲一次 `ssh -p <port> <user>@<host> gerrit version` |
 | 结果表里 `查询失败：gerrit 上查不到 change N（编号对不对？有没有权限？）` | 编号错或没权限；`ggcp -h` 看参数写法 |
-| 结果表里 `此提交本地已经有了（可能已合入）` | 这个补丁已经在当前分支里（或等价的空提交）；不用再打，退出码 1 |
+| 结果表里 `此提交本地已经有了（可能已合入）` | 这个补丁已经在当前分支里（或等价的空提交，**没有 Change-Id 的提交**才走这条）；不用再打，退出码 1 |
+| 结果表里 `此 Change-Id 已在本地历史（提交 X，patchset N）→ 先 ggrvt <编号> 回退，再打 <编号>/<patchset>` | 同一个 change 的旧 patchset 还在本地历史里（再打就是两个同 Change-Id 的提交）。按提示 `ggrvt <编号>` 回退旧的再打；**不要**手工删提交、也不要 `reset --hard` |
+| 结果表里 `此 Change-Id 在本地历史里有 N 个提交（a b …）→ ggrvt <编号> 会拒绝回退，请手工处理` | 历史遗留：同一个 Change-Id 有好几笔本地提交（可能有人手工 cherry-pick 过）。`ggrvt` 不替你挑；自己 `git log --grep` 看清楚再 `git revert --no-edit <sha>` |
+| `ggrvt: 本地历史里没有该 Change-Id 的提交（change N 还没打上？）` | 这个 change 的提交不在当前分支历史里（没打过 / 打在了别的分支上）；先 `ggcp N`，或 `cdd -N` 看看项目对不对 |
+| `ggrvt: 本地历史里有 N 个同 Change-Id 的提交，不敢替你决定回退哪个：` | 同上有多个；按列出的 SHA 自己挑一个 revert（`ggrvt` 一次只回退一个） |
+| `ggrvt: 不接受 patchset（'1234/2'）——回退的是整个提交`（返回 2） | `ggrvt` 回退的是整笔提交，不接受 patchset；用 `ggrvt 1234` |
+| `ggrvt: change N 属于项目 X，但本地还没检出（清单路径 Y）` | 按提示 `repo sync Y` |
+| `ggrvt: 回退 <sha> 失败：…` + `工作树没清干净，请手工处理：` | revert 冲突且 `--abort` 没收干净（少见）；按 `git status` 手工处理，**别** `reset --hard` |
 | 结果表里 `XXX 文件冲突`（可能多个文件） | cherry-pick 和本地文件冲突；命令已经 `git cherry-pick --abort` 收干净，按列出的文件手工处理后再来 |
 | 结果表里 `下载失败：…` | 网络/权限/ref 没了；先 `git fetch <remote> <ref>` 手工试一次看完整报错 |
 | 结果表里 `抓到的 commit（X）和 gerrit 说的（Y）不一致` | patchset/ref 选错了（或 change 刚被更新）；`gq` 确认后再来 |
@@ -645,7 +781,9 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 ## 测试
 
 ```sh
-sh tests/run_tests.sh      # 480 条（六段合计，以脚本最后打印的通过/失败数为准）
+sh tests/run_tests.sh      # 622 条（六段合计，以脚本最后打印的通过/失败数为准；
+                           #   2026-10-22 实测 622 通过 0 失败 —— 这一版加了
+                           #   ggcp 的同 Change-Id 预检 + ggrvt，+142 条）
 ```
 
 测试分六段（都在临时目录里造"公司环境"的假工作区 / 假裸仓 / 假 gerrit，不碰真工作区、不连网）：
@@ -690,7 +828,19 @@ sh tests/run_tests.sh      # 480 条（六段合计，以脚本最后打印的�
      `项目目录不存在：gone/project（先 repo sync …）`；项目不在清单里 →
      `本地清单里没有项目 nope/nope`；
    - **Change-Id**：选择表（编号/patchset/仓库/路径/提交链接）、逐个问两次、答 y 的打上、
-     答 n 的不打；`-n` 一个都不打、`-y` 两个都打；
+     答 n 的不打；`-n` 一个都不打；`-y` 给同一个 change 的两个 patchset 时**只成第一个**
+     （第二个被预检拦下 —— 见下）；
+   - **同 Change-Id 预检 + `ggrvt`**：change 1234 的两个 patchset（ps2 只在 ps1 上多一个
+     文件，正是用户报的场景）—— `ggcp 1234/1` 成功后 `ggcp 1234/2` **必须失败**
+     （退出码 1、总述 `成功 0 / 失败 1`、说明里含"已在本地历史" + `patchset 1` + `ggrvt 1234`、
+     ps2 的文件**没进来**、`git log --grep` 里同 Change-Id 的提交只有 1 个、HEAD 没动、
+     工作树干净、没有 `CHERRY_PICK_HEAD`）；重复打 `1234/1` 同样被拦；`ggrvt 1234` 回退成功
+     （HEAD 变成 `Revert "…"`、ps1 文件被撤掉、**有效的**同 Change-Id 提交 0 个）→ 再
+     `ggcp 1234/2` 成功、**有效的**同 Change-Id 提交只有 1 个、log 顶部是
+     `ps2 / Revert / ps1` → 再打一次又失败（证明不会攒出第二个）；另钉 `ggrvt` 的
+     零命中 / 多命中（列出两个 SHA、不擅自 revert）/ 不给参数 / 带 patchset / 列表 /
+     项目没检出 / gerrit 没给 Change-Id 各种报错与退出码，以及 `ggcp 1234/1`、`ggrvt 1234`
+     **成功路径 stderr 0 字节**；
    - **`cdd -N`**：`-9001`（仓库在工作区里）跳到那个目录、`9001` 老写法也能跳、
      `-9002`（清单里有、目录没检出）打 `属于项目 gone/project，但本地还没检出` 且返回 1、
      `-9003`（清单里没这个项目）打 `属于项目 nope/nope，但当前工作区的清单里没有它`、
@@ -722,12 +872,15 @@ sh tests/run_tests.sh      # 480 条（六段合计，以脚本最后打印的�
 - **zsh 或 bash**：两个 shell 各一份 env，命令、报错、退出码一致。
   `tests/run_tests.sh` 用**同一张用例表**把两个 shell 都跑一遍，它覆盖的是
   `cnp` / `cnn` / `cdd`（含点参数）的报错、落点与退出码、`ggcp` 的拆参数、
-  `ggco` 与 `gpun` 的端到端；
+  `ggcp` 的同 Change-Id 预检、`ggrvt`、`ggco` 与 `gpun` 的端到端；
   其余命令的"两份等价"靠的是**同改两份文件**，不是测试。
 - **git**：`ggco` / `gpun` 全程只用 `git`（`ggco`：`rev-parse` / `status` / `fetch` /
   `checkout` / `show-ref` / `remote`；`gpun`：`pull`），不需要 python、不需要 ssh 配置
   （remote URL 是 https / file:// 也能用）。
-- **ssh**：`ggcp` / `gchk` / `gq` 走 `ssh <gerrit> gerrit query`，公钥要在 gerrit 上登记过。
+- **ssh**：`ggcp` / `ggrvt` / `gchk` / `gq` 走 `ssh <gerrit> gerrit query`，公钥要在 gerrit 上登记过。
+- **git（预检 / 回退那几个子命令）**：`ggcp` 的预检用 `git log --grep` + `git patch-id`
+  + `git fetch`（把所有 patchset 的 ref 一次拉下来认 patchset）；`ggrvt` 用
+  `git log --grep` + `git revert --no-edit`（失败时 `git revert --abort`）。
 - **GNU grep（要 `-P`）**：`gbb` 挑命令行用。
 - **grep（`-E` 即可）+ `head`**：`gpun` 从 `gb` 的输出里挑那条 `git pull … --unshallow`
   （POSIX ERE，BusyBox / macOS 自带 grep 也认；这是它和 `gbb` 的一处不同）。
@@ -753,7 +906,7 @@ sh tests/run_tests.sh      # 480 条（六段合计，以脚本最后打印的�
 | `$WSW_ANDROID_DIR/my_repo.py` | `$WTOOL_REPO_TOOL`（= `$WTOOL_PROJECT_DIR/my_repo.py`） | 统一命名，且独立于安装位置 |
 | `_up_to_have_dir` 依赖外部 source 链 | 内联在 env 文件里 | 本项目停用 `source_all_env.sh` 后要自包含 |
 | `my_repo.py` import repo 内部 `manifest_xml` | 自己解析 XML | 公司机器可能是 go 版 repo / 发布包里没有 `.repo/repo`，import 那条路会断 |
-| 无 | `ggcp` / `gchk` / `gq` / `gpush` | gerrit 检视流程 |
+| 无 | `ggcp` / `ggrvt` / `gchk` / `gq` / `gpush` | gerrit 检视流程（`ggrvt` 是本地回退） |
 | `cdd` 的**点参数**（用户 2026-10-09 说"mytool 就有这个功能，wtool 你给我删了"） | 加回来：`cdd ..` / `cdd ...` / `cdd ....` …，N 个点 = 往上 N-1 层，**不限点数**、**bash 也认**、点到根停在 `/` | wtool 中途丢了这条；zsh 那边只有 oh-my-zsh 的 4 条 global alias（≤6 个点），bash 完全没有 |
 | 无 | `cdd -N`（编号 → 项目目录）；纯数字 `cdd N` 保留为老写法 | 用户要求：`-` 开头一眼区分"这是提交，不是目录"；纯数字会和同名目录打架 |
 
@@ -764,8 +917,8 @@ sh tests/run_tests.sh      # 480 条（六段合计，以脚本最后打印的�
 | `wtool.xml` | 清单：1 个 `<zshrc>` + 1 个 `<bashrc>`（无 link） |
 | `env.zsh` / `env.bash` | 全部命令 + 内联 `_up_to_have_dir` + 两个工具路径（zsh / bash 两份，等价） |
 | `my_repo.py` | manifest 查询工具（自包含解析，见上） |
-| `gerrit_query.py` | 解析 `gerrit query --format=JSON` 的输出（供 `ggcp` / `gchk` / `gq` 用）；动作：`patchset` / `commits`（一个 Change-Id 的每个 patchset 一行 TSV）/ `table`（把那些行打成对齐的表，`--path-map` 给"项目名→本地路径"）/ **`result-table`（ggcp 的 5 列结果表，CJK 按 2 列对齐）** / `check` / `list` / `raw` |
-| `tests/run_tests.sh` | 上面两个 python 工具的测试 + `env.zsh`/`env.bash` 的行为对比（含 `ggco` / `gpun` 的裸仓端到端，以及 `ggcp` 的假 gerrit / 四笔跨两仓库 / 冲突清理夹具） |
+| `gerrit_query.py` | 解析 `gerrit query --format=JSON` 的输出（供 `ggcp` / `ggrvt` / `gchk` / `gq` 用）；动作：`patchset`（10 列 TSV，后两列是 Change-Id 和这个 change 所有 patchset 的 `编号:revision:ref`，给预检/`ggrvt` 认 patchset 用）/ `commits`（一个 Change-Id 的每个 patchset 一行 TSV）/ `table`（把那些行打成对齐的表，`--path-map` 给"项目名→本地路径"）/ **`result-table`（ggcp 的 5 列结果表，CJK 按 2 列对齐）** / `check` / `list` / `raw` |
+| `tests/run_tests.sh` | 上面两个 python 工具的测试 + `env.zsh`/`env.bash` 的行为对比（含 `ggco` / `gpun` 的裸仓端到端，以及 `ggcp` 的假 gerrit / 四笔跨两仓库 / 冲突清理 / **同 Change-Id 预检 + `ggrvt`** 夹具） |
 | `scripts/release.json` | 发布账：这一版发了哪些资产（名字 / 字节数 / sha256）——**wtool 生成**，`download-release` 按它校验 |
 | `docs/download.md` | 给用户看的下载页（这版发了什么、直链在哪）——**wtool 生成**，别手改（见文末「下载」） |
 | `architecture.md` | 代码现在长什么样（现状，只写现状） |

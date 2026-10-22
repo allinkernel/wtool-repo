@@ -11,7 +11,15 @@
 用法：
     gerrit query ... | gerrit_query.py patchset <change> [patchset]
         输出 TSV：number  patchset  revision  ref  project  branch  url  subject
+                 change_id  patchsets
         没给 patchset 时取 current patch set（没有 current 就取编号最大的）。
+        后两列是给 ggcp 的"同 Change-Id 预检"和 ggrvt 用的：
+          change_id  这个 change 的 Change-Id（`I`+40 位十六进制）。新版 gerrit 给
+                     `change_id`，老版只有 `id`（`project~branch~I…`），两种都认，
+                     都没有就是空。
+          patchsets  这个 change **所有** patchset 的 `<编号>:<revision>:<ref>`，
+                     空格分隔。预检时把它们一次 fetch 下来比 patch-id，就能认出
+                     "本地历史里那个提交是第几个 patchset"。
 
     gerrit query ... | gerrit_query.py commits
         把查询结果的**每个 patch set 各列一行**（ggcp 按 Change-Id 打补丁时用：
@@ -41,10 +49,14 @@
 """
 
 import json
+import re
 import sys
 import unicodedata
 
 PROG = "gerrit_query.py"
+
+# gerrit 的 Change-Id 一律是 `I` + 40 位十六进制
+CHANGE_ID_RE = re.compile(r"^I[0-9a-fA-F]{40}$")
 
 
 def die(msg, code=2):
@@ -106,6 +118,21 @@ def pick_change(changes, number=None):
     return None
 
 
+def pick_change_by_change_id(changes, token):
+    """按 Change-Id 选 change（只有 `patchset` 动作用，ggrvt 按 Change-Id 查时走这条）。
+
+    查询本身就是 `change:<Change-Id>`，所以结果里**恰好一条**就是它。
+    gerrit 上同一个 Change-Id 也可能横跨多个分支 / 项目（返回多条）——这时不替用户挑，
+    让他改用编号（编号才唯一指向一个 change）。
+    """
+    if not changes:
+        return None, "没有匹配 Change-Id %s 的提交" % token
+    if len(changes) > 1:
+        return None, ("Change-Id %s 对应 %d 个提交（可能跨分支/项目），"
+                      "请改用编号" % (token, len(changes)))
+    return changes[0], None
+
+
 def vote_summary(change, patchset):
     """返回 (是否有 Code-Review +2, 投票字串, +2 的人)。"""
     approvals = (patchset or {}).get("approvals") or []
@@ -127,8 +154,49 @@ def tsv(fields):
     return "\t".join("" if f is None else str(f) for f in fields)
 
 
+def change_id_of(change):
+    """这个 change 的 Change-Id。
+
+    新版 gerrit（2.15+）的 query 结果里有 `change_id`；更老的只有 `id`，
+    形如 `myProject~master~I8473b95934b5732ac55d26311a706c9c2bde9940`。
+    两种都认；都没有（或格式不对）就返回空串 —— 调用方据此跳过预检。
+    """
+    cid = (change.get("change_id") or "").strip()
+    if cid:
+        return cid if cid.startswith("I") else "I" + cid
+    ident = (change.get("id") or "").strip()
+    if "~" in ident:
+        tail = ident.rsplit("~", 1)[1].strip()
+        if CHANGE_ID_RE.match(tail):
+            return tail
+    return ""
+
+
+def patchset_spec(change):
+    """这个 change **所有** patchset 的 `<编号>:<revision>:<ref>`，空格分隔。
+
+    ggcp 的预检 / ggrvt 拿它认出"本地历史里那个提交是第几个 patchset"：
+    把这些 ref 一次 fetch 下来（只下对象），再比 `git patch-id`。
+    """
+    parts = []
+    for ps in patchsets_of(change):
+        number = ps.get("number")
+        revision = ps.get("revision") or ""
+        ref = ps.get("ref") or ""
+        if number is None or not revision or not ref:
+            continue
+        parts.append("%s:%s:%s" % (number, revision, ref))
+    return " ".join(parts)
+
+
 def cmd_patchset(changes, change_no, wanted):
     change = pick_change(changes, change_no)
+    # 给的是一整个 Change-Id（ggrvt 支持这种入口）时按 Change-Id 认，不再要求"编号相等"；
+    # 纯数字仍然严格按编号精确命中（以前那个"只有一条就拿来用"的兜底不许回来）。
+    if change is None and CHANGE_ID_RE.match(str(change_no or "")):
+        change, err = pick_change_by_change_id(changes, change_no)
+        if change is None:
+            return die(err, 1)
     if change is None:
         return die("没有匹配 change %s 的提交" % change_no, 1)
     ps = pick_patchset(change, wanted)
@@ -147,6 +215,8 @@ def cmd_patchset(changes, change_no, wanted):
         change.get("branch"),
         change.get("url"),
         change.get("subject"),
+        change_id_of(change),
+        patchset_spec(change),
     ]) + "\n")
     return 0
 

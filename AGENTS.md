@@ -45,7 +45,24 @@
   bash 的启动提示连 `set +m` 都压不住；disown 掉的 pid 再 `wait` 会立刻返回
   （zsh rc=127），并行阶段会失去同步。**成功路径 stderr 必须是 0 字节，表格只走
   stdout** —— 测试里有真 PTY 用例钉着（见 `AGENTS.md` §3 说明）。
-- **`cdd -N` 和 `ggcp` 共用 `_gr_query_info`**：不要在 `cdd` 里另写一份 ssh/JSON 解析。
+- **`cdd -N` / `ggcp` / `ggrvt` 共用 `_gr_query_info`**：不要在它们里另写一份 ssh/JSON 解析。
+  `ggrvt` 的参数识别也复用 `_gerrit_parse_change_arg`（它自己只多挡"列表 / patchset / 多个参数"）。
+- **`_gr_query_info` 的 TSV 是 10 列**（`number patchset revision ref project branch url
+  subject change-id patchsets`），`_gr_query_one` 的行也是 10 列
+  （第 8 列换成 relpath、第 9/10 列原样带过去）。⚠️ 改列数时**所有 `IFS=$'\t' read`
+  的地方都要一起改**：`read` 的**最后一个变量会吞掉剩下的整段**（带 tab），少写一个变量
+  就会让"项目路径"列变成 `mylib<TAB>I1234…` —— 这种错静默、不报错。要改的四处：
+  `_gr_query_one`、`_gr_repo_batch` 的开头 read + 循环 read、`_gr_repo_fail_all` 的 read、
+  `ggcp` 里按项目分组那个 read。
+- **`ggcp` 的同 Change-Id 预检不许摘掉**（2026-10-22 用户报的真 bug）：目标仓库里已经
+  有同 Change-Id 的提交时，该行必须失败、不许 cherry-pick，并提示 `ggrvt`。它靠
+  `gerrit_query.py patchset` 的第 9 列（Change-Id）和第 10 列（所有 patchset 的
+  `编号:revision:ref`）+ `git patch-id` 认"本地那个提交是第几个 patchset"。
+- **"已经被 revert 掉的提交"不算在历史里**：`_gr_local_change_commits` 会从
+  `git log --format=%B` 里收 `This reverts commit <sha>.` 的目标 SHA 并剔除。
+  ⚠️ **`ggrvt` 跑 `git revert` 时 `LC_ALL=C` 不能丢**：那行是 git 的 i18n 文案，
+  中文 locale 下会被翻译，删了 `LC_ALL=C` 就会出现"ggrvt 回退过、ggcp 还是说已在历史里"
+  —— 测试里 `ggrvt → ggcp 1234/2 成功` 那几条会红。
 - **`env.zsh` 和 `env.bash` 必须同改。** 同一批命令、同样的报错文字、同样的退出码。
   报错前缀两个 shell 都取"当前函数名"（zsh `funcstack[1]` / bash `FUNCNAME[0]`），
   改报错时别把这条弄丢。
@@ -69,10 +86,10 @@
 ## 3. 验证（改完必须跑）
 
 ```sh
-sh tests/run_tests.sh      # 480 条，应该全绿（以脚本最后打印的通过/失败数为准；
-                           #   2026-10-22 实测 480 通过 0 失败（这一版加了 ggcp 的
-                           #   stderr=0 / 真 PTY 作业控制噪声用例，+28 条；
-                           #   上一版 452：ggcp 两阶段表格 / 冲突分类 / cdd -N）
+sh tests/run_tests.sh      # 622 条，应该全绿（以脚本最后打印的通过/失败数为准；
+                           #   2026-10-22 实测 622 通过 0 失败（这一版加了 ggcp 的
+                           #   同 Change-Id 预检 + ggrvt，+142 条；
+                           #   上一版 480：ggcp 的 stderr=0 / 真 PTY 作业控制噪声）
                            #   这个数字常变，只有它**跑出来**的 PASS/FAIL 行算数，别手抄）
                            #
                            #   ⚠️ 本机 PATH 里 `zsh` 可能先命中 ~/.wtool/usr/bin/zsh

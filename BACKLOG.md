@@ -7,6 +7,73 @@
 
 ---
 
+## ✅ `ggcp` 同 Change-Id 预检 + 新命令 `ggrvt`（2026-10-22）
+
+**用户原话**："`ggcp` 命令，对同一个提交，比如 `1234` 执行 `ggcp 1234/1` 和
+`ggcp 1234/2` 的话，2 只是在 1 的基础上新增了一个文件的修改，这种情况下，**先打 1 再打 2，
+应该冲突**……现在是先打 1 再打 2，**可以成功**……如果这样的话，**git log 中会出现两个
+同 change-id 的提交**。`ggcp` 打上第一个 patchset 后，再次执行 `ggcp 1234/2` **要报错**，
+而不是成功。然后可以加一个 **`ggrvt`** 命令，执行 `ggrvt 1234` 时可以直接**回退 1234/1
+打上的补丁**，这个时候用户 `ggcp 1234/2` 就可以了。"
+
+**根因**：`ggcp` 只做 fetch + cherry-pick，从不看"这个 Change-Id 是不是已经在本地历史里
+了"。ps2 的 diff 是 ps1 的超集时，cherry-pick 会顺利落一个**新的**同 Change-Id 提交。
+
+**做了什么**（用户说明在 `README.md` §6，现状在 `architecture.md` §4.0 / §4.4）：
+
+1. **`gerrit_query.py patchset` 加两列**：第 9 列 Change-Id（新版 gerrit 的 `change_id`，
+   老版从 `id`（`project~branch~I…`）里拆，都没有就空）、第 10 列这个 change **所有**
+   patchset 的 `编号:revision:ref`。`_gr_query_info` / `_gr_query_one` 的 TSV 因此变成
+   10 列，spec 文件也带上了这两列。
+2. **`ggcp` 预检**（`_gr_repo_batch` 里，fetch 之前）：`_gr_local_change_commits
+   <Change-Id>` = `git log --format=%H --grep='^Change-Id: <id>$'`，**剔掉已经被 revert
+   的**（见第 4 点）；命中就**不 fetch、不 cherry-pick**，该行写失败：
+   `此 Change-Id 已在本地历史（提交 <短sha>，patchset <n>）→ 先 ggrvt <编号> 回退，再打
+   <编号>/<patchset>`；多个同 Change-Id 提交时列出全部 SHA + `ggrvt <编号> 会拒绝回退，
+   请手工处理`。整条命令 rc=1，其它仓库/change 照常。`<n>` 由 `_gr_local_patchset` 认：
+   把这些 patchset 的 ref 一次 `git fetch`（只下对象）再逐个比 `git patch-id`。
+3. **新命令 `ggrvt <编号|链接|Change-Id>`**（`env.zsh` / `env.bash` 各一份）：查 gerrit
+   拿项目（复用 `_gr_query_info`）→ 和 `cdd -N` 一样找本地目录 → 恰好一个提交就
+   `LC_ALL=C git revert --no-edit <sha>`；零个报错 + `先 ggcp N`；多个列出每个
+   `<sha>  <subject>`、**不擅自 revert**；冲突/失败先 `git revert --abort` 收干净再报。
+   不接受 patchset（`ggrvt 1234/2` 返回 2）。成功只打一行、**stderr 0 字节**：
+   `已回退 <短sha>（change N, patchset P）→ 现在可以 ggcp N/P`。
+4. **"被 revert 掉的不算还在历史里"** 是这套流程能闭环的关键：`git revert` 不删历史，
+   ps1 那个提交连同它的 `Change-Id:` 行一直在 `git log` 里。`_gr_local_change_commits`
+   从 `git log --format=%B` 里收 `This reverts commit <sha>.` 的目标 SHA 并剔除；
+   `ggrvt` 用 `LC_ALL=C` 跑 revert，保证这行永远是英文（git 的 revert 模板是 i18n 文案）。
+   已知边界：把 revert 再 revert 回来认不出来，仍按"已回退"处理（README 排错写了）。
+5. **`_gerrit_resolve` 支持报错前缀参数**（默认 `ggcp`），`ggrvt` 的报错不会串台；
+   `ggrvt` 复用 `_gerrit_parse_change_arg` 拆参数，但自己挡"列表 / patchset / 多个参数"。
+
+**验证到什么程度**：
+
+- `sh tests/run_tests.sh` → **622 通过 / 0 失败**（改前 480，新增 142 条 = 71 × 2 个 shell；
+  用系统 zsh：`env $(env | sed -n 's/^\(WTOOL[A-Z_]*\)=.*/-u \1/p') PATH=/usr/bin:/bin`）。
+- 夹具新增 change **1234**（ps1 加 `1234ps1.txt`、ps2 再加 `1234ps2.txt`，**同一个
+  Change-Id**；change 1 / 2 的提交消息也补上了 `Change-Id:` 行）；JSON 里 change 1234
+  带 `change_id`、change 2 **只带老式 `id`**（顺带钉兜底）。
+- 新增断言：`ggcp 1234/1` 成功后 `ggcp 1234/2` **必须失败**（rc 1、`成功 0 / 失败 1`、
+  说明里有"已在本地历史" + `patchset 1` + `ggrvt 1234`、ps2 文件**没进来**、HEAD 没动、
+  工作树干净、没有 `CHERRY_PICK_HEAD`、`git log --grep` 里同 Change-Id 提交只有 1 个）；
+  重复打 `1234/1` 同样被拦；`ggrvt 1234` → HEAD 变 `Revert "…"`、ps1 文件撤掉、
+  **有效的**同 Change-Id 提交 0 个 → `ggcp 1234/2` 成功、有效的仍只有 1 个、log 顶部
+  `ps2 / Revert / ps1` → 再打一次又失败；`ggrvt` 零命中 / 多命中（列出两个 SHA、HEAD 没动）/
+  不给参数 / 带 patchset / 列表 / 项目没检出 / gerrit 没给 Change-Id 的报错与退出码；
+  `ggcp 1234/1` 和 `ggrvt 1234` 成功路径 **stderr 0 字节**；`ggco` 的 cksum 冻结断言照旧通过。
+- **变异验证**：把预检那个 `if` 条件改成恒假（其余不动）重跑 → **564 通过 / 58 失败**
+  （29 条 × 2 个 shell：`ggcp 1234/2` 变成成功、`git log` 里出现 2 个同 Change-Id 提交、
+  `ggrvt` 因为多命中而拒绝等），证明新断言真钉得住。
+- 工作流实测（假 gerrit：本地裸仓 + 桩 `_gerrit_ssh`，不联网）：`ggcp 1234/1` 成功 →
+  `ggcp 1234/2` 失败并提示 `ggrvt 1234` → `ggrvt 1234` 成功 → `ggcp 1234/2` 成功；
+  每一步 `git log --oneline` 都留了记录（有效的同 Change-Id 提交始终 ≤1）。
+- **没验到的**：没在真公司 gerrit 上跑过（真假 gerrit 的差别在 ssh，不在这些逻辑）；
+  patchset 号靠 `git patch-id` 认，patchset 之间有 rebase / 上下文大改时可能认不出
+  （认不出只是少写"patchset N"，不影响拦不拦）；Windows / 老 git（<2.29）没试
+  （`git patch-id --stable` / `git revert --no-edit` 都是老选项，没有用新特性）。
+
+---
+
 ## ✅ `ggcp` 交互式 shell 的 job 控制噪声（2026-10-22）
 
 **用户原话**："`ggcp` 命令，应该是标准错误输出还是会被打印出来，用户看到的不只是表格，

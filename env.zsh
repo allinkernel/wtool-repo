@@ -581,8 +581,9 @@ gbb ()
 # ---------------------------------------------------------------------------
 # Gerrit
 #
-# 三件事：
+# 四件事：
 #   ggcp  <change> [patchset]  把 gerrit 上的一个提交（指定 patchset）抓回本地并 cherry-pick
+#   ggrvt <change>             把本地历史里同 Change-Id 的那个提交 revert 掉（ggcp 预检拦下时用）
 #   gchk  <change>             看它有没有 +2 / 有没有 merged（决定能不能推 main）
 #   gpush [remote]             把当前 HEAD 推到 refs/for/<清单里声明的分支>
 #
@@ -669,10 +670,11 @@ _gerrit_guess_from_remotes () {
     return 1
 }
 
-# 填好 _GERRIT_HOST/_PORT/_USER/_KEY；失败返回 1
+# 填好 _GERRIT_HOST/_PORT/_USER/_KEY；失败返回 1。
+# 第一个参数是**报错前缀**（默认 ggcp）—— ggrvt 也走这份解析，报错得说 ggrvt。
 _gerrit_resolve () {
     typeset -g _GERRIT_HOST _GERRIT_PORT _GERRIT_USER _GERRIT_KEY
-    local url
+    local who=${1:-ggcp} url
     _GERRIT_HOST=${WTOOL_GERRIT_HOST:-}
     _GERRIT_PORT=${WTOOL_GERRIT_PORT:-}
     _GERRIT_USER=${WTOOL_GERRIT_USER:-}
@@ -700,7 +702,7 @@ _gerrit_resolve () {
     fi
 
     if [[ -z ${_GERRIT_HOST} ]]; then
-        echo "ggcp: 不知道 gerrit 服务器在哪。请任选一种方式告诉它：" >&2
+        echo "${who}: 不知道 gerrit 服务器在哪。请任选一种方式告诉它：" >&2
         echo "  export WTOOL_GERRIT_HOST=user@gerrit.company.com:29418" >&2
         echo "  或写 ~/.wtool/gerrit.conf（host=/port=/user=/sshkey=）" >&2
         echo "  或在 repo 根下放 .gerrit/client.conf" >&2
@@ -832,9 +834,10 @@ _gerrit_query_capture () {
     return ${rc}
 }
 
-# 内部：查一个 change + patchset，成功时 stdout 打一行 TSV：
-#   number  patchset  revision  ref  project  branch  url  subject
-# 失败时返回 1，原因放在 _GR_QUERY_ERR（ggcp 和 cdd 共用这一份查询逻辑）。
+# 内部：查一个 change + patchset，成功时 stdout 打一行 10 列 TSV：
+#   number  patchset  revision  ref  project  branch  url  subject  change-id  patchsets
+# 后两列（change-id / patchsets）给"同 Change-Id 预检"和 ggrvt 用，见 gerrit_query.py。
+# 失败时返回 1，原因放在 _GR_QUERY_ERR（ggcp / ggrvt / cdd 共用这一份查询逻辑）。
 _gr_query_info () {
     local change=$1 wanted=$2 json line
     typeset -g _GR_QUERY_ERR
@@ -855,6 +858,8 @@ _gr_query_info () {
     [[ -n ${wanted} ]] && args+=(${wanted})
     if ! line=$(print -r -- ${json} | python3 ${WTOOL_GERRIT_TOOL} ${args} 2>&1); then
         _GR_QUERY_ERR=$(print -r -- ${line} | head -n 1)
+        # 别把工具名前缀带进结果表 / ggrvt 的报错（python 的 die 会打 `gerrit_query.py: …`）
+        _GR_QUERY_ERR=${_GR_QUERY_ERR#gerrit_query.py: }
         if [[ ${_GR_QUERY_ERR} == *没有匹配* ]]; then
             _GR_QUERY_ERR="gerrit 上查不到 change ${change}（编号对不对？有没有权限？）"
         fi
@@ -879,11 +884,79 @@ _gr_short_sha () {
     print -r -- ${sha} | cut -c1-12
 }
 
+# 内部：一个提交的 patch-id。同一个补丁 cherry-pick 到别的 base 上 patch-id 不变，
+# 所以它能回答"本地历史里那个提交是 gerrit 上的哪个 patchset"。
+# 认不出（不是提交 / 空输入）就什么都不打印。
+_gr_patch_id () {
+    local sha=$1
+    [[ -z ${sha} ]] && return 0
+    git show --no-color --format= ${sha} 2>/dev/null \
+        | git patch-id --stable 2>/dev/null \
+        | awk 'NR == 1 { print $1 }'
+}
+
+# 内部：本地历史里"这个 Change-Id 还有效的那几个提交"（一行一个 SHA）。
+#
+# 判据：`git log --grep` 找提交消息里带 `Change-Id: <id>` 的提交，
+# **再剔掉已经被 revert 掉的** —— git revert 的默认消息里有一行
+# `This reverts commit <sha>.`（ggrvt 用 LC_ALL=C 跑 revert，保证这行永远是英文，
+# 不随用户 locale 变）。不剔的话 ggrvt 回退过的提交还躺在历史里，
+# ggcp 会永远认为"这个 Change-Id 还在"，用户就再也打不上新 patchset 了。
+#
+# 已知边界：把 revert 再 revert 回来（补丁重新生效）这种情形这里认不出来，
+# 仍按"已被回退"处理 —— 见 README 排错。
+_gr_local_change_commits () {
+    local cid=$1 reverted sha
+    reverted=$(git log --format=%B 2>/dev/null \
+        | sed -n 's/^This reverts commit \([0-9a-f][0-9a-f]*\)\.\{0,1\}$/\1/p')
+    for sha in ${(f)"$(git log --format=%H --grep="^Change-Id: ${cid}$" 2>/dev/null)"}; do
+        [[ -z ${sha} ]] && continue
+        if [[ -n ${reverted} ]]; then
+            case $'\n'"${reverted}"$'\n' in
+                *$'\n'"${sha}"$'\n'*) continue ;;
+            esac
+        fi
+        print -r -- ${sha}
+    done
+}
+
+# 内部：本地提交对应 gerrit 上的**哪个 patchset**（best-effort，认不出就什么都不打印）。
+#   $1 = 本地提交 SHA
+#   $2 = git remote（ggcp 那边已经选好的那条）
+#   $3 = _gr_query_info 第 10 列（`编号:revision:ref` 空格分隔）
+# 做法：把这些 patchset 的 ref **一次** fetch 下来（只下对象、不建本地 ref、不碰
+# FETCH_HEAD 以外的引用），再逐个比 patch-id。fetch 失败 / 认不出唯一一个就返回空 ——
+# 这只是为了让报错文案能写"patchset 1"，认不出也不能影响主流程。
+_gr_local_patchset () {
+    local sha=$1 remote=$2 pairs=$3 pair n rev want hit='' cnt=0
+    local -a refs
+    [[ -z ${pairs} || -z ${remote} ]] && return 0
+    want=$(_gr_patch_id ${sha})
+    [[ -z ${want} ]] && return 0
+    for pair in ${=pairs}; do
+        rev=${pair#*:}
+        refs+=(${rev#*:})
+    done
+    (( ${#refs} )) || return 0
+    GIT_SSH_COMMAND=$(_gerrit_git_ssh_command) \
+        git fetch ${remote} ${refs} >/dev/null 2>&1
+    for pair in ${=pairs}; do
+        n=${pair%%:*}
+        rev=${pair#*:}
+        rev=${rev%%:*}
+        [[ $(_gr_patch_id ${rev}) == ${want} ]] || continue
+        hit=${n}
+        cnt=$(( cnt + 1 ))
+    done
+    (( cnt == 1 )) && print -r -- ${hit}
+    return 0
+}
+
 # 内部：把一个仓库的所有提交标记成同一个失败原因（项目不在清单 / 目录没检出 / 工作树脏…）。
 _gr_repo_fail_all () {
     local project=$1 spec=$2 out=$3 reason=$4
-    local number pset revision ref p branch url rel
-    while IFS=$'\t' read -r number pset revision ref p branch url rel; do
+    local number pset revision ref p branch url rel cid psrefs
+    while IFS=$'\t' read -r number pset revision ref p branch url rel cid psrefs; do
         [[ -z ${pset} ]] && pset='-'
         print -r -- "${project}"$'\t'"${rel:--}"$'\t'"$(_gr_short_sha "${revision}")"$'\t'"${pset}"$'\t'"${reason}" >> ${out}
     done < ${spec}
@@ -999,16 +1072,19 @@ _gr_ask () {
     esac
 }
 
-# 查询阶段的**一条**任务：查 gerrit，再算本地清单路径，打一行 8 列 TSV：
-#   number  patchset  revision  ref  project  branch  url  relpath
+# 查询阶段的**一条**任务：查 gerrit，再算本地清单路径，打一行 10 列 TSV：
+#   number  patchset  revision  ref  project  branch  url  relpath  change-id  patchsets
 # relpath 拿不到就写 `-`（后面按项目分组，失败原因由执行阶段给）。
+# 第 9/10 列原样带过去：执行阶段要用它们做"同 Change-Id 已在本地历史"预检。
 _gr_query_one () {
-    local change=$1 wanted=$2 line project rel
+    local change=$1 wanted=$2 line project rel cid psrefs
     line=$(_gr_query_info ${change} ${wanted}) || return 1
     project=$(print -r -- ${line} | cut -f5)
+    cid=$(print -r -- ${line} | cut -f9)
+    psrefs=$(print -r -- ${line} | cut -f10)
     rel=$(_repo_project_relpath ${project} 2>/dev/null) || rel='-'
     [[ -z ${rel} ]] && rel='-'
-    print -r -- "$(print -r -- ${line} | cut -f1-7)"$'\t'"${rel}"
+    print -r -- "$(print -r -- ${line} | cut -f1-7)"$'\t'"${rel}"$'\t'"${cid}"$'\t'"${psrefs}"
 }
 
 # 执行阶段的**一个仓库**：spec 里每一行是一个提交（按用户给的顺序，**串行**）。
@@ -1016,12 +1092,14 @@ _gr_query_one () {
 # 本函数**不直接打印** —— 交给父进程按仓库聚拢后合并成一张表。
 _gr_repo_batch () {
     local project=$1 spec=$2 out=$3
-    local number pset revision ref p branch url rel root dir remote
+    local number pset revision ref p branch url rel cid psrefs root dir remote
     local fetch_out cherry_out fetched porcelain files abort_out after reason rc
+    local target ps_hint local_sha local_shorts sha
+    local -a local_shas
     : > ${out}
 
     root=$(css 2>/dev/null) || root=''
-    IFS=$'\t' read -r number pset revision ref p branch url rel < ${spec} || true
+    IFS=$'\t' read -r number pset revision ref p branch url rel cid psrefs < ${spec} || true
     if [[ -z ${root} ]]; then
         _gr_repo_fail_all ${project} ${spec} ${out} '当前目录不在 repo 工作区里'
         return 1
@@ -1050,13 +1128,46 @@ _gr_repo_batch () {
         return 1
     fi
 
-    while IFS=$'\t' read -r number pset revision ref p branch url rel; do
+    while IFS=$'\t' read -r number pset revision ref p branch url rel cid psrefs; do
         [[ -n ${ref} ]] || ref=${revision}
         [[ -z ${pset} ]] && pset='-'
         if [[ -z ${revision} ]]; then
             reason='gerrit 没给出 commit id'
             print -r -- "${project}"$'\t'"${rel:--}"$'\t-'$'\t'"${pset}"$'\t'"${reason}" >> ${out}
             continue
+        fi
+
+        # ---- 预检：这个 Change-Id 已经在本地历史里了吗？----
+        # 用户报的问题：ggcp 1234/1 打完 ps1，再 ggcp 1234/2 —— ps2 的 diff 只比 ps1
+        # 多一个文件，cherry-pick 会"成功"，于是 git log 里出现**两个同 Change-Id 的
+        # 提交**（推 gerrit 就成了同一笔的重复提交）。这里先查本地历史：命中就
+        # 不 fetch、不 cherry-pick，直接让用户 ggrvt 把旧的那个回退掉。
+        # 只算"没被 revert 掉"的提交 —— ggrvt 回退之后必须能重新 ggcp。
+        if [[ -n ${cid} ]]; then
+            local_shas=(${(f)"$(_gr_local_change_commits ${cid})"})
+            if (( ${#local_shas} )); then
+                target=${number}
+                [[ -n ${pset} && ${pset} != '-' ]] && target=${number}/${pset}
+                if (( ${#local_shas} == 1 )); then
+                    local_sha=${local_shas[1]}
+                    ps_hint=$(_gr_local_patchset ${local_sha} ${remote} "${psrefs}")
+                    reason="此 Change-Id 已在本地历史（提交 $(_gr_short_sha ${local_sha})"
+                    [[ -n ${ps_hint} ]] && reason="${reason}，patchset ${ps_hint}"
+                    reason="${reason}）→ 先 ggrvt ${number} 回退，再打 ${target}"
+                else
+                    # 历史遗留：同一个 Change-Id 有好几个提交。ggrvt 会拒绝替你挑，
+                    # 这里把 SHA 都列出来（不然用户不知道要处理哪几个）。
+                    local_shorts=
+                    for sha in ${local_shas}; do
+                        local_shorts="${local_shorts} $(_gr_short_sha ${sha})"
+                    done
+                    local_shorts=${local_shorts# }
+                    reason="此 Change-Id 在本地历史里有 ${#local_shas} 个提交（${local_shorts}）→ ggrvt ${number} 会拒绝回退，请手工处理"
+                fi
+                reason=${reason//$'\t'/ }
+                print -r -- "${project}"$'\t'"${rel:--}"$'\t'"$(_gr_short_sha ${revision})"$'\t'"${pset}"$'\t'"${reason}" >> ${out}
+                continue
+            fi
         fi
 
         fetch_out=$(GIT_SSH_COMMAND=$(_gerrit_git_ssh_command) git fetch ${remote} ${ref} < /dev/null 2>&1)
@@ -1228,7 +1339,7 @@ _gr_expand_changeids () {
 #   Change-Id 会先在 gerrit 上展开成它的所有提交，打表后逐个询问。
 #   -p <n> 指定 patchset（默认当前那个）；-y 全打不问；-n 全跳过。
 ggcp () {
-    local assume= ps_all= item number patchset rc=0 revision ref branch url
+    local assume= ps_all= item number patchset rc=0 revision ref branch url cid psrefs
     while [[ $# -gt 0 ]]; do
         case $1 in
             -y|--yes)      assume=yes; shift ;;
@@ -1318,7 +1429,7 @@ ggcp () {
         : > "${work}/groups"
         for (( i = 1; i <= item_count; i++ )); do
             [[ -s "${work}/out.${i}" ]] || continue
-            IFS=$'\t' read -r number patchset revision ref project branch url rel < "${work}/out.${i}"
+            IFS=$'\t' read -r number patchset revision ref project branch url rel cid psrefs < "${work}/out.${i}"
             [[ -z ${project} ]] && project='-'
             if ! grep -Fxq -- "${project}" "${work}/seen"; then
                 g=$(( g + 1 ))
@@ -1371,6 +1482,185 @@ ggcp () {
     ) || rc=$?
     rm -rf "${work}"
     return ${rc}
+}
+
+# ---------------------------------------------------------------------------
+# ggrvt —— 把本地历史里"某一个 Change-Id"的那个提交 revert 掉
+#
+#   ggrvt 1234                                        # 按 gerrit 编号
+#   ggrvt I1111111111111111111111111111111111111111    # 按 Change-Id
+#   ggrvt https://host/c/proj/+/1234                  # 按链接
+#
+# **不接受 patchset**（`ggrvt 1234/2` 报错）：回退的是整个提交。
+# 只改本地：`git revert --no-edit <sha>`（不动远端、不 reset、不碰别的提交）。
+# ggcp 的预检发现"同 Change-Id 已在本地历史"时会拦下并提示用这条命令。
+#
+# 参数识别复用 ggcp 那套 `_gerrit_parse_change_arg`（编号 / 两种链接 / Change-Id），
+# 查 gerrit 复用 `_gr_query_info`（不复制第二份 ssh/JSON 代码），
+# 定位仓库和 `cdd -N` 一样：gerrit 给项目名 → 本地清单给路径 → `repo sync` 提示。
+# ---------------------------------------------------------------------------
+
+_gr_ggrvt_usage () {
+    echo "Usage: ggrvt <编号|链接|Change-Id>" >&2
+    echo "  ggrvt 1234         # 回退本地历史里 change 1234 那个提交" >&2
+    echo "  ggrvt I1111111111111111111111111111111111111111   # 按 Change-Id" >&2
+    echo "  ggrvt https://gerrit.company.com/c/proj/+/1234    # 按 gerrit 链接" >&2
+    echo "  ⚠️ 不接受 patchset：ggrvt 回退的是整个提交（ggrvt 1234/2 会报错）" >&2
+}
+
+# ggrvt <编号|链接|Change-Id>
+ggrvt () {
+    local arg change cid line number pset project psrefs root rel dir remote
+    local sha ps cur target short msg errfile revert_out rc after
+    local -a shas
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h|--help) _gr_ggrvt_usage; return 0 ;;
+            --)        shift; break ;;
+            -*)        echo "ggrvt: 不认识的选项 '$1'" >&2; _gr_ggrvt_usage; return 2 ;;
+            *)         break ;;
+        esac
+    done
+    if [[ $# -lt 1 ]]; then
+        _gr_ggrvt_usage
+        return 2
+    fi
+    if [[ $# -gt 1 ]]; then
+        echo "ggrvt: 一次只回退一个 change（多给了：$*）" >&2
+        _gr_ggrvt_usage
+        return 2
+    fi
+    arg=$1
+    if [[ ${arg} == *[,]* ]]; then
+        echo "ggrvt: 一次只回退一个 change（不认识列表 '${arg}'）" >&2
+        _gr_ggrvt_usage
+        return 2
+    fi
+    if [[ ${arg} != http*://* && ${arg} == */* ]]; then
+        echo "ggrvt: 不接受 patchset（'${arg}'）——回退的是整个提交" >&2
+        echo "       要回退 change ${arg%%/*} 的那笔提交，用：ggrvt ${arg%%/*}" >&2
+        return 2
+    fi
+    # 复用 ggcp 的拆参数（数字 / 两种链接 / Change-Id）。它的报错文案是 ggcp 的，
+    # 这里把 stderr 吞掉、自己出一句 ggrvt 的（前缀不能串台）。
+    errfile=$(mktemp "${TMPDIR:-/tmp}/ggrvt-arg.XXXXXX") || return 1
+    if ! _gerrit_parse_change_arg ${arg} 2>${errfile}; then
+        rm -f ${errfile}
+        echo "ggrvt: '${arg}' 不是提交编号、gerrit 链接或 Change-Id" >&2
+        _gr_ggrvt_usage
+        return 2
+    fi
+    rm -f ${errfile}
+    if [[ -n ${_GERRIT_PS} ]]; then
+        echo "ggrvt: 不接受 patchset（'${arg}' 里带了 patchset ${_GERRIT_PS}）——回退的是整个提交" >&2
+        return 2
+    fi
+    change=${_GERRIT_CHANGE}
+    cid=${_GERRIT_CHANGEID}
+
+    if ! _gerrit_resolve ggrvt; then
+        return 1
+    fi
+    errfile=$(mktemp "${TMPDIR:-/tmp}/ggrvt-query.XXXXXX") || return 1
+    if ! line=$(_gr_query_info ${change} '' 2>${errfile}); then
+        msg=$(_gr_first_line "$(cat ${errfile} 2>/dev/null)")
+        [[ -z ${msg} ]] && msg="查询 change ${change} 失败"
+        echo "ggrvt: ${msg}" >&2
+        rm -f ${errfile}
+        return 1
+    fi
+    rm -f ${errfile}
+    number=$(print -r -- ${line} | cut -f1)
+    pset=$(print -r -- ${line} | cut -f2)
+    project=$(print -r -- ${line} | cut -f5)
+    [[ -z ${cid} ]] && cid=$(print -r -- ${line} | cut -f9)
+    psrefs=$(print -r -- ${line} | cut -f10)
+    [[ -z ${number} ]] && number=${change}
+
+    # 定位仓库：和 `cdd -N` 同一条路 —— gerrit 给项目名，清单给本地路径。
+    if ! root=$(css 2>/dev/null); then
+        echo "ggrvt: 当前目录不在 repo 工作区里（一路往上都找不到 .repo）" >&2
+        return 1
+    fi
+    if ! rel=$(_repo_project_relpath ${project}); then
+        echo "ggrvt: change ${number} 属于项目 ${project}，但当前工作区的清单里没有它" >&2
+        return 1
+    fi
+    dir=${root}/${rel}
+    if [[ ! -d ${dir} ]]; then
+        echo "ggrvt: change ${number} 属于项目 ${project}，但本地还没检出（清单路径 ${rel}）" >&2
+        echo "       先 repo sync ${rel}" >&2
+        return 1
+    fi
+    cd ${dir} || { echo "ggrvt: 进不了项目目录：${dir}" >&2; return 1; }
+    if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
+        echo "ggrvt: 工作树有本地改动（先 stash/commit）" >&2
+        return 1
+    fi
+    if [[ -z ${cid} ]]; then
+        echo "ggrvt: gerrit 没给出 change ${number} 的 Change-Id，没法在本地历史里找它" >&2
+        return 1
+    fi
+
+    shas=(${(f)"$(_gr_local_change_commits ${cid})"})
+    if (( ${#shas} == 0 )); then
+        echo "ggrvt: 本地历史里没有该 Change-Id 的提交（change ${number} 还没打上？）" >&2
+        echo "       先 ggcp ${number}" >&2
+        return 1
+    fi
+    if (( ${#shas} > 1 )); then
+        # 历史遗留：同一 Change-Id 好几个提交。**不擅自 revert 多个** —— 回退哪个
+        # 只有用户知道（说不定其中一个是别人提交的）。列出 SHA 让他自己挑。
+        echo "ggrvt: 本地历史里有 ${#shas} 个同 Change-Id 的提交，不敢替你决定回退哪个：" >&2
+        for sha in ${shas}; do
+            echo "         ${sha}  $(git log -1 --format=%s ${sha} 2>/dev/null)" >&2
+        done
+        echo "       请自己挑一个：git revert --no-edit <sha>" >&2
+        return 1
+    fi
+    sha=${shas[1]}
+    short=${sha[1,12]}
+
+    # "本地这个提交是第几个 patchset"（best-effort）：把这些 patchset 的 ref 一次
+    # fetch 下来比 patch-id。认不出就空着 —— 只为把话说清楚，不影响回退。
+    ps=
+    if remote=$(_gerrit_project_remote 2>/dev/null) && [[ -n ${psrefs} ]]; then
+        ps=$(_gr_local_patchset ${sha} ${remote} "${psrefs}")
+    fi
+
+    # LC_ALL=C：git revert 的默认消息里那行 `This reverts commit <sha>.` 是 i18n
+    # 文案（中文 locale 下会被翻译），而 `_gr_local_change_commits` 靠它认
+    # "这个提交已经被回退过"。固定成英文，以后才不会因为用户 locale 变而失灵。
+    revert_out=$(LC_ALL=C git revert --no-edit ${sha} < /dev/null 2>&1)
+    rc=$?
+    if (( rc != 0 )); then
+        # 冲突/失败：把中间态收干净（只用 --abort，绝不 reset --hard），再报原因。
+        if git rev-parse -q --verify REVERT_HEAD >/dev/null 2>&1; then
+            git revert --abort < /dev/null >/dev/null 2>&1 || \
+                git revert --quit < /dev/null >/dev/null 2>&1 || true
+        fi
+        echo "ggrvt: 回退 ${short} 失败：$(_gr_first_line "${revert_out}")" >&2
+        after=$(git status --porcelain --untracked-files=no)
+        if [[ -n ${after} ]]; then
+            echo "       工作树没清干净，请手工处理：" >&2
+            print -r -- ${after} >&2
+        else
+            echo "       工作树已恢复，没留下 revert 中间态" >&2
+        fi
+        return 1
+    fi
+
+    # 打完这行只走 stdout（成功路径 stderr 必须 0 字节，和 ggcp 同一条规矩）。
+    cur=${pset:-${ps}}
+    target=${number}
+    [[ -n ${cur} ]] && target=${number}/${cur}
+    if [[ -n ${ps} ]]; then
+        print -r -- "已回退 ${short}（change ${number}, patchset ${ps}）→ 现在可以 ggcp ${target}"
+    else
+        print -r -- "已回退 ${short}（change ${number}）→ 现在可以 ggcp ${target}"
+    fi
+    return 0
 }
 
 # ggco <分支|tag|commit>

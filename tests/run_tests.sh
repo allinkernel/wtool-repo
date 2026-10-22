@@ -176,7 +176,7 @@ fi
 G="$here/../gerrit_query.py"
 
 cat > "$T/q.json" <<'EOF'
-{"project":"platform/frameworks/base","branch":"main","number":1234,"subject":"demo change","url":"http://gerrit.example.com/c/platform/frameworks/base/+/1234","status":"NEW","currentPatchSet":{"number":2,"revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"refs/changes/34/1234/2","approvals":[{"type":"Code-Review","value":"+1","by":{"username":"someone"}}]},"patchSets":[{"number":1,"revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","ref":"refs/changes/34/1234/1"},{"number":2,"revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"refs/changes/34/1234/2","approvals":[{"type":"Code-Review","value":"+1","by":{"username":"someone"}}]}]}
+{"change_id":"I1111111111111111111111111111111111111111","project":"platform/frameworks/base","branch":"main","number":1234,"subject":"demo change","url":"http://gerrit.example.com/c/platform/frameworks/base/+/1234","status":"NEW","currentPatchSet":{"number":2,"revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"refs/changes/34/1234/2","approvals":[{"type":"Code-Review","value":"+1","by":{"username":"someone"}}]},"patchSets":[{"number":1,"revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","ref":"refs/changes/34/1234/1"},{"number":2,"revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"refs/changes/34/1234/2","approvals":[{"type":"Code-Review","value":"+1","by":{"username":"someone"}}]}]}
 {"type":"stats","rowCount":1,"runTimeMilliseconds":5,"moreChanges":false}
 EOF
 
@@ -189,6 +189,34 @@ chk "显式 patchset 2 的 ref" \
     "$(python3 $G patchset 1234 2 < "$T/q.json" | cut -f4)" "refs/changes/34/1234/2"
 chk "从 URL 形态的 change 号也能查" \
     "$(python3 $G patchset 1234 < "$T/q.json" | cut -f5)" "platform/frameworks/base"
+# ggcp 的"同 Change-Id 已在本地"预检和 ggrvt 都靠这两列：Change-Id + 所有 patchset
+chk "patchset 第 9 列是 Change-Id（新版 gerrit 的 change_id）" \
+    "$(python3 $G patchset 1234 < "$T/q.json" | cut -f9)" "I1111111111111111111111111111111111111111"
+chk "patchset 第 10 列是所有 patchset 的 编号:revision:ref" \
+    "$(python3 $G patchset 1234 < "$T/q.json" | cut -f10)" \
+    "1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:refs/changes/34/1234/1 2:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:refs/changes/34/1234/2"
+# 老 gerrit 没有 change_id，只有 id（project~branch~Change-Id）
+sed 's/"change_id":"I1111111111111111111111111111111111111111",/"id":"platform\/frameworks\/base~main~I1111111111111111111111111111111111111111",/' \
+    "$T/q.json" > "$T/q-id.json"
+chk "change_id 缺失时从老的 id 字段兜底" \
+    "$(python3 $G patchset 1234 < "$T/q-id.json" | cut -f9)" "I1111111111111111111111111111111111111111"
+# 两个字段都没有（夹具/非 gerrit 提交）：列是空的，ggcp 的预检自动跳过
+sed 's/"change_id":"I1111111111111111111111111111111111111111",//' "$T/q.json" > "$T/q-nocid.json"
+chk "两个字段都没有时 Change-Id 列是空的（预检会跳过）" \
+    "$(python3 $G patchset 1234 < "$T/q-nocid.json" | cut -f9)" ""
+
+# ggrvt 允许拿整个 Change-Id 当参数：查询本身就是 change:<id>，恰好一条就用它
+chk "patchset 用 Change-Id 也能查出编号（ggrvt 的入口）" \
+    "$(python3 $G patchset I1111111111111111111111111111111111111111 < "$T/q.json" | cut -f1)" "1234"
+# 同一 Change-Id 横跨多个 change（多条结果）时不替用户挑，让他改用编号
+{ sed -n 1p "$T/q.json"; sed -n 1p "$T/q.json" | sed 's/"number":1234/"number":4321/'; } > "$T/q-multi.json"
+if python3 $G patchset I1111111111111111111111111111111111111111 < "$T/q-multi.json" >/dev/null 2>"$T/e2"; then
+    bad "Change-Id 对应多个 change 时应该失败"
+else
+    grep -q "对应 2 个提交" "$T/e2" && ok "Change-Id 多条结果：报错让改用编号" \
+                                   || bad "Change-Id 多条结果的报错不对 [$(cat "$T/e2")]"
+fi
+
 if python3 $G patchset 1234 9 < "$T/q.json" >/dev/null 2>"$T/e1"; then
     bad "不存在的 patchset 应该失败"
 else
@@ -341,24 +369,38 @@ if command -v git >/dev/null 2>&1; then
         git commit -qm 'base'
         git branch -M main
         BASE=$(git rev-parse HEAD)
-        # change 1 patchset 1：加 ps1.txt
+        # change 1 patchset 1：加 ps1.txt（**带 Change-Id** —— ggcp 的预检靠它认
+        # "这个 Change-Id 已经在本地历史里了"）
         printf 'ps1\n' > ps1.txt
         git add -A
-        git commit -qm 'lab: change one (ps1)'
+        git commit -qm 'lab: change one (ps1)' -m 'Change-Id: I1111111111111111111111111111111111111111'
         PS1=$(git rev-parse HEAD)
         # change 1 patchset 2：同一个 change 的新版本（ps1.txt 一样 + 多一个 ps2.txt）
         git reset -q --hard "$BASE"
         printf 'ps1\n' > ps1.txt
         printf 'ps2\n' > ps2.txt
         git add -A
-        git commit -qm 'lab: change one (ps2)'
+        git commit -qm 'lab: change one (ps2)' -m 'Change-Id: I1111111111111111111111111111111111111111'
         PS2=$(git rev-parse HEAD)
         # change 2：另一个提交（加 two.txt）
         git reset -q --hard "$BASE"
         printf 'two\n' > two.txt
         git add -A
-        git commit -qm 'lab: change two'
+        git commit -qm 'lab: change two' -m 'Change-Id: I2222222222222222222222222222222222222222'
         TWO=$(git rev-parse HEAD)
+        # change 1234：两个 patchset，ps2 只在 ps1 上多一个文件 —— 这就是用户报的
+        # 那个场景（先打 1 再打 2 会让 git log 出现两个同 Change-Id 的提交）。
+        git reset -q --hard "$BASE"
+        printf '1234ps1\n' > 1234ps1.txt
+        git add -A
+        git commit -qm 'lab: change 1234 (ps1)' -m 'Change-Id: I1234567890abcdef1234567890abcdef12345678'
+        C1234_PS1=$(git rev-parse HEAD)
+        git reset -q --hard "$BASE"
+        printf '1234ps1\n' > 1234ps1.txt
+        printf '1234ps2\n' > 1234ps2.txt
+        git add -A
+        git commit -qm 'lab: change 1234 (ps2)' -m 'Change-Id: I1234567890abcdef1234567890abcdef12345678'
+        C1234_PS2=$(git rev-parse HEAD)
         # 四笔跨两个仓库的补丁：101/102 是同一个文件的两步（顺序反了会冲突），
         # 103/104 在另一个仓库里做同样的事 —— 用来钉"同仓库串行、不同仓库并行"。
         git reset -q --hard "$BASE"
@@ -388,13 +430,21 @@ if command -v git >/dev/null 2>&1; then
             "$A1":refs/changes/01/101/1 \
             "$A2":refs/changes/02/102/1 \
             "$B1":refs/changes/03/103/1 \
-            "$B2":refs/changes/04/104/1
-        printf '%s %s %s %s %s %s %s %s\n' \
-            "$BASE" "$PS1" "$PS2" "$TWO" "$A1" "$A2" "$B1" "$B2" > "$GGCP_ROOT/shas"
+            "$B2":refs/changes/04/104/1 \
+            "$C1234_PS1":refs/changes/34/1234/1 \
+            "$C1234_PS2":refs/changes/34/1234/2
+        printf '%s %s %s %s %s %s %s %s %s %s\n' \
+            "$BASE" "$PS1" "$PS2" "$TWO" "$A1" "$A2" "$B1" "$B2" \
+            "$C1234_PS1" "$C1234_PS2" > "$GGCP_ROOT/shas"
         git -C "$GGCP_BARE" symbolic-ref HEAD refs/heads/main
     )
     read -r GGCP_BASE_SHA GGCP_PS1_SHA GGCP_PS2_SHA GGCP_TWO_SHA \
-        GGCP_A1_SHA GGCP_A2_SHA GGCP_B1_SHA GGCP_B2_SHA < "$GGCP_ROOT/shas"
+        GGCP_A1_SHA GGCP_A2_SHA GGCP_B1_SHA GGCP_B2_SHA \
+        GGCP_C1234_PS1_SHA GGCP_C1234_PS2_SHA < "$GGCP_ROOT/shas"
+    # 三个 Change-Id（夹具里的提交消息里就是它们）
+    GGCP_CID1='I1111111111111111111111111111111111111111'
+    GGCP_CID2='I2222222222222222222222222222222222222222'
+    GGCP_CID1234='I1234567890abcdef1234567890abcdef12345678'
 
     # 工作区：清单 + client.conf + 项目目录（真 git 仓，remote 叫 polygerrit）
     cat > "$GGCP_WS/.repo/manifests/default.xml" <<'X'
@@ -434,11 +484,16 @@ X
     _stats='{"type":"stats","rowCount":1,"runTimeMilliseconds":1,"moreChanges":false}'
     # change 1 有**两个 patchset**（真的 gerrit 也是这样：`change:1` 一次回全部 patchset）
     cat > "$GGCP_JSON/change-1.json" <<X
-{"number":1,"project":"platform/mylib","branch":"main","subject":"lab: change one","url":"http://g.example.com/c/platform/mylib/+/1","currentPatchSet":{"number":1,"revision":"$GGCP_PS1_SHA","ref":"refs/changes/01/1/1"},"patchSets":[{"number":1,"revision":"$GGCP_PS1_SHA","ref":"refs/changes/01/1/1"},{"number":2,"revision":"$GGCP_PS2_SHA","ref":"refs/changes/01/1/2"}]}
+{"number":1,"change_id":"I1111111111111111111111111111111111111111","project":"platform/mylib","branch":"main","subject":"lab: change one","url":"http://g.example.com/c/platform/mylib/+/1","currentPatchSet":{"number":1,"revision":"$GGCP_PS1_SHA","ref":"refs/changes/01/1/1"},"patchSets":[{"number":1,"revision":"$GGCP_PS1_SHA","ref":"refs/changes/01/1/1"},{"number":2,"revision":"$GGCP_PS2_SHA","ref":"refs/changes/01/1/2"}]}
 $_stats
 X
+    # 老 gerrit 只有 id（project~branch~Change-Id），没有 change_id —— 走兜底
     cat > "$GGCP_JSON/change-2.json" <<X
-{"number":2,"project":"platform/mylib","branch":"main","subject":"lab: change two","url":"http://g.example.com/c/platform/mylib/+/2","currentPatchSet":{"number":1,"revision":"$GGCP_TWO_SHA","ref":"refs/changes/02/2/1"},"patchSets":[{"number":1,"revision":"$GGCP_TWO_SHA","ref":"refs/changes/02/2/1"}]}
+{"number":2,"id":"platform/mylib~main~I2222222222222222222222222222222222222222","project":"platform/mylib","branch":"main","subject":"lab: change two","url":"http://g.example.com/c/platform/mylib/+/2","currentPatchSet":{"number":1,"revision":"$GGCP_TWO_SHA","ref":"refs/changes/02/2/1"},"patchSets":[{"number":1,"revision":"$GGCP_TWO_SHA","ref":"refs/changes/02/2/1"}]}
+$_stats
+X
+    cat > "$GGCP_JSON/change-1234.json" <<X
+{"number":1234,"change_id":"I1234567890abcdef1234567890abcdef12345678","project":"platform/mylib","branch":"main","subject":"lab: change 1234","url":"http://g.example.com/c/platform/mylib/+/1234","currentPatchSet":{"number":2,"revision":"$GGCP_C1234_PS2_SHA","ref":"refs/changes/34/1234/2"},"patchSets":[{"number":1,"revision":"$GGCP_C1234_PS1_SHA","ref":"refs/changes/34/1234/1"},{"number":2,"revision":"$GGCP_C1234_PS2_SHA","ref":"refs/changes/34/1234/2"}]}
 $_stats
 X
     # 四笔跨两个仓库的补丁（101/102 -> mylib，103/104 -> other）
@@ -476,7 +531,7 @@ _gerrit_ssh () {
     case \${c#change:} in
         1)    cat "$GGCP_JSON/change-1.json" ;;
         2)    cat "$GGCP_JSON/change-2.json" ;;
-        101|102|103|104)
+        101|102|103|104|1234)
             # 只有测试显式设了 GR_QUERY_LOG 才记日志/延迟（平时查询不拖时间）
             if [ -n "\${GR_QUERY_LOG:-}" ]; then
                 printf 'start %s\n' "\${c#change:}" >> "\$GR_QUERY_LOG"
@@ -485,6 +540,7 @@ _gerrit_ssh () {
             fi
             cat "$GGCP_JSON/change-\${c#change:}.json" ;;
         I1111111111111111111111111111111111111111) cat "$GGCP_JSON/change-1.json" ;;
+        I1234567890abcdef1234567890abcdef12345678) cat "$GGCP_JSON/change-1234.json" ;;
         9001|9002|9003) cat "$GGCP_JSON/cdd-\${c#change:}.json" ;;
         *)    cat "$GGCP_JSON/empty.json" ;;
     esac
@@ -928,16 +984,23 @@ EOF
             "$(git -C "$GGCP_WORK" log --oneline --format=%s | head -2 | tr '\n' '/')" \
             "lab: change two/lab: change one (ps1)/"
 
-        # ---- 重复打：空提交 -> 本地已有；失败后工作树必须干净 ----
+        # ---- 重复打（**没有 Change-Id** 的提交才走这条路）：空提交 -> 本地已有；
+        #      失败后工作树必须干净。有 Change-Id 的重复打会被预检先拦下，见下面
+        #      "同 Change-Id 预检 + ggrvt" 那一节。
+        #      101/102 的夹具提交故意没有 Change-Id 行（钉住兜底分类）。
         srun "source $GGCP_ROOT/stub.sh
             cd $GGCP_WORK
-            ggcp 1"
-        chk "重复打同一个补丁：退出码 1" "$rc" "1"
-        chk "重复打：总述失败 1" \
+            ggcp 101"
+        chk "101 先打一次：退出码 0" "$rc" "0"
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggcp 101"
+        chk "重复打同一个补丁（无 Change-Id）：退出码 1" "$rc" "1"
+        chk "重复打（无 Change-Id）：总述失败 1" \
             "$(printf '%s\n' "$out" | sed -n 1p)" "1 个仓库 / 1 笔提交 / 成功 0 / 失败 1"
         case $out in
-            *"此提交本地已经有了（可能已合入）"*) ok "重复打：结果说明是「本地已有」" ;;
-            *) bad "重复打的结果说明不对：[$out]" ;;
+            *"此提交本地已经有了（可能已合入）"*) ok "重复打（无 Change-Id）：结果说明是「本地已有」" ;;
+            *) bad "重复打（无 Change-Id）的结果说明不对：[$out]" ;;
         esac
         chk "重复打之后工作树干净" "$(git -C "$GGCP_WORK" status --porcelain)" ""
         chk "重复打之后没有 CHERRY_PICK_HEAD" \
@@ -1055,15 +1118,249 @@ EOF
         srun "source $GGCP_ROOT/stub.sh
             cd $GGCP_WORK
             ggcp -y I1111111111111111111111111111111111111111"
-        chk "ggcp -y：退出码 0（两个 patchset 都打）" "$rc" "0"
-        chk "ggcp -y：总述 2 笔成功" \
+        # 同一个 Change-Id 的两个 patchset 连着打：第一个成功，第二个必须被
+        # "同 Change-Id 已在本地历史"预检拦住（用户报的正是"两个都能打成功"）。
+        chk "ggcp -y（一个 Change-Id 两个 patchset）：退出码 1" "$rc" "1"
+        chk "ggcp -y：总述 成功 1 / 失败 1" \
             "$(printf '%s\n' "$out" | grep '个仓库 / .* 笔提交' | tail -1)" \
-            "1 个仓库 / 2 笔提交 / 成功 2 / 失败 0"
-        chk "ggcp -y：表里两行成功" \
-            "$(printf '%s\n' "$out" | grep -c '^platform/mylib.*成功')" "2"
-        chk "ggcp -y：两个 patchset 的文件都在" \
-            "$(cat "$GGCP_WORK/ps1.txt" "$GGCP_WORK/ps2.txt" 2>/dev/null | tr '\n' '/')" "ps1/ps2/"
+            "1 个仓库 / 2 笔提交 / 成功 1 / 失败 1"
+        chk "ggcp -y：表里两行（一行成功、一行预检失败）" \
+            "$(printf '%s\n' "$out" | grep -c '^platform/mylib')" "2"
+        chk "ggcp -y：只有一行是成功" \
+            "$(printf '%s\n' "$out" | grep -c '^platform/mylib.*成功')" "1"
+        case $out in
+            *"ggrvt 1 回退"*) ok "ggcp -y：第二个 patchset 的结果里提示 ggrvt 1 回退" ;;
+            *) bad "ggcp -y：第二个 patchset 没提示 ggrvt：[$out]" ;;
+        esac
+        chk "ggcp -y：只打了 ps1（ps2 的文件没有）" \
+            "$(cat "$GGCP_WORK/ps1.txt" 2>/dev/null)/$(cat "$GGCP_WORK/ps2.txt" 2>/dev/null)" "ps1/"
+        chk "ggcp -y：本地只有 1 个同 Change-Id 的提交" \
+            "$(git -C "$GGCP_WORK" log --format=%H --grep="^Change-Id: $GGCP_CID1$" | wc -l | tr -d ' ')" "1"
         ggcp_reset
+
+        # ---- 同 Change-Id 预检 + ggrvt（用户 2026-10-22 报的真 bug）----
+        #
+        # 现场：ggcp 1234/1 打过 ps1，再 ggcp 1234/2 —— ps2 只比 ps1 多一个文件，
+        # cherry-pick 会"成功"，于是 git log 里出现**两个同 Change-Id 的提交**。
+        # 现在的规矩：第二次必须失败、给出 ggrvt 提示、一个字节都不许 cherry-pick；
+        # ggrvt 回退掉旧的之后，才能重新打。
+        echo "== env.$SHELL_NAME：ggcp 预检（同 Change-Id 已在本地）+ ggrvt =="
+
+        ggcp_reset
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggcp 1234/1"
+        chk "ggcp 1234/1：退出码 0" "$rc" "0"
+        chk "ggcp 1234/1：ps1 的文件打上了" "$(cat "$GGCP_WORK/1234ps1.txt" 2>/dev/null)" "1234ps1"
+        chk "ggcp 1234/1：本地历史里有一个同 Change-Id 的提交" \
+            "$(git -C "$GGCP_WORK" log --format=%H --grep="^Change-Id: $GGCP_CID1234$" | wc -l | tr -d ' ')" "1"
+
+        # 关键用例：同一个 change 的 ps2 —— 必须失败
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggcp 1234/2"
+        chk "ggcp 1234/2（同 Change-Id 已在本地）：退出码 1" "$rc" "1"
+        chk "预检失败：总述 成功 0 / 失败 1" \
+            "$(printf '%s\n' "$out" | sed -n 1p)" "1 个仓库 / 1 笔提交 / 成功 0 / 失败 1"
+        case $out in
+            *"此 Change-Id 已在本地历史"*) ok "预检失败：结果说明点明「此 Change-Id 已在本地历史」" ;;
+            *) bad "预检失败的说明不对：[$out]" ;;
+        esac
+        case $out in
+            *"patchset 1"*) ok "预检失败：认出历史里那个是 patchset 1（patch-id 比出来的）" ;;
+            *) bad "预检失败没认出 patchset：[$out]" ;;
+        esac
+        case $out in
+            *"ggrvt 1234 回退"*) ok "预检失败：提示先 ggrvt 1234 回退" ;;
+            *) bad "预检失败没提示 ggrvt：[$out]" ;;
+        esac
+        chk "预检失败后：ps2 的文件**没有**被带进来" \
+            "$(cat "$GGCP_WORK/1234ps2.txt" 2>/dev/null)" ""
+        chk "预检失败后：本地仍然只有 1 个同 Change-Id 的提交" \
+            "$(git -C "$GGCP_WORK" log --format=%H --grep="^Change-Id: $GGCP_CID1234$" | wc -l | tr -d ' ')" "1"
+        chk "预检失败后：HEAD 没动（还是 ps1 那个提交）" \
+            "$(git -C "$GGCP_WORK" log -1 --format=%s)" "lab: change 1234 (ps1)"
+        chk "预检失败后：工作树干净" "$(git -C "$GGCP_WORK" status --porcelain)" ""
+        chk "预检失败后：没有 CHERRY_PICK_HEAD" \
+            "$(git -C "$GGCP_WORK" rev-parse -q --verify CHERRY_PICK_HEAD 2>/dev/null || true)" ""
+
+        # 同一笔再打一次（ggcp 1234/1 重复）也命中这条预检
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggcp 1234/1"
+        chk "重复打 1234/1：退出码 1（也被预检拦下）" "$rc" "1"
+        case $out in
+            *"ggrvt 1234 回退"*) ok "重复打 1234/1：同样提示 ggrvt" ;;
+            *) bad "重复打 1234/1 的提示不对：[$out]" ;;
+        esac
+
+        # ---- ggrvt：回退 ps1 → 再打 ps2 成功（且不会出现第二个同 Change-Id 的有效提交）----
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggrvt 1234"
+        chk "ggrvt 1234：退出码 0" "$rc" "0"
+        case $out in
+            *"已回退"*"change 1234, patchset 1"*) ok "ggrvt 1234：说明里写了 change/patchset" ;;
+            *) bad "ggrvt 1234 的输出不对：[$out]" ;;
+        esac
+        case $out in
+            *"现在可以 ggcp 1234/2"*) ok "ggrvt 1234：提示现在可以 ggcp 1234/2" ;;
+            *) bad "ggrvt 1234 没提示下一步：[$out]" ;;
+        esac
+        chk "ggrvt 之后：HEAD 是 revert 提交" \
+            "$(git -C "$GGCP_WORK" log -1 --format=%s)" 'Revert "lab: change 1234 (ps1)"'
+        chk "ggrvt 之后：ps1 的文件被撤掉了" \
+            "$(cat "$GGCP_WORK/1234ps1.txt" 2>/dev/null)" ""
+        chk "ggrvt 之后：工作树干净" "$(git -C "$GGCP_WORK" status --porcelain)" ""
+        # 历史里那个 ps1 提交还在（revert 不删历史），但**不算数了** ——
+        # 这就是 ggcp 预检认的"有效提交"，不剔掉它 ggrvt 就白回退了。
+        srun "cd $GGCP_WORK && _gr_local_change_commits $GGCP_CID1234 | wc -l | tr -d ' '"
+        chk "ggrvt 之后：有效的同 Change-Id 提交 0 个" "$out" "0"
+
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggcp 1234/2"
+        chk "ggrvt 之后 ggcp 1234/2：退出码 0（能重新打了）" "$rc" "0"
+        chk "ggrvt 之后 ggcp 1234/2：ps2 的文件在" \
+            "$(cat "$GGCP_WORK/1234ps2.txt" 2>/dev/null)" "1234ps2"
+        chk "ggrvt 之后 ggcp 1234/2：ps1 的文件也在（ps2 的 diff 带着它）" \
+            "$(cat "$GGCP_WORK/1234ps1.txt" 2>/dev/null)" "1234ps1"
+        srun "cd $GGCP_WORK && _gr_local_change_commits $GGCP_CID1234 | wc -l | tr -d ' '"
+        chk "ggrvt 之后重打：有效的同 Change-Id 提交只有 1 个" "$out" "1"
+        chk "ggrvt 之后重打：log 顶部顺序是 ps2 / revert / ps1" \
+            "$(git -C "$GGCP_WORK" log --format=%s -3 | tr '\n' '/')" \
+            'lab: change 1234 (ps2)/Revert "lab: change 1234 (ps1)"/lab: change 1234 (ps1)/'
+        # 再打一次就必须又被拦住 —— 证明"有效的同 Change-Id 提交"始终只有一个
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggcp 1234/2"
+        chk "重打之后再打 1234/2：退出码 1（不会有第二个同 Change-Id 提交）" "$rc" "1"
+        srun "cd $GGCP_WORK && _gr_local_change_commits $GGCP_CID1234 | wc -l | tr -d ' '"
+        chk "重打之后再打：有效的同 Change-Id 提交还是 1 个" "$out" "1"
+
+        # ---- 成功路径：stderr 必须是 0 字节（和 ggcp 同一条硬规矩）----
+        ggcp_reset
+        erun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggcp 1234/1"
+        chk "ggcp 1234/1 成功路径：退出码 0" "$rc" "0"
+        chk "ggcp 1234/1 成功路径：stderr 0 字节" \
+            "$(wc -c < "$T/e.$SHELL_NAME" | tr -d ' ')" "0"
+        erun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggrvt 1234"
+        chk "ggrvt 成功路径：退出码 0" "$rc" "0"
+        chk "ggrvt 成功路径：stderr 0 字节" \
+            "$(wc -c < "$T/e.$SHELL_NAME" | tr -d ' ')" "0"
+        chk "ggrvt 成功路径：stdout 只有一行" \
+            "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1"
+        ggcp_reset
+
+        # ---- ggrvt 的报错：零命中 / 多命中 / 不支持 patchset / 项目没检出 ----
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggrvt 2"
+        chk "ggrvt 零命中（本地没打过 change 2）：退出码 1" "$rc" "1"
+        case $out in
+            *"本地历史里没有该 Change-Id 的提交"*) ok "ggrvt 零命中：报错说清了" ;;
+            *) bad "ggrvt 零命中的报错不对：[$out]" ;;
+        esac
+
+        # 多命中：本地真有同 Change-Id 的两个提交（历史遗留）-> 拒绝，且列出两个 SHA
+        DUP_A=$(cd "$GGCP_WORK" && git commit -q --allow-empty -m 'dup a' -m "Change-Id: $GGCP_CID1234" && git rev-parse HEAD)
+        DUP_B=$(cd "$GGCP_WORK" && git commit -q --allow-empty -m 'dup b' -m "Change-Id: $GGCP_CID1234" && git rev-parse HEAD)
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggrvt 1234"
+        chk "ggrvt 多个同 Change-Id 提交：退出码 1" "$rc" "1"
+        case $out in
+            *"2 个同 Change-Id 的提交"*) ok "ggrvt 多命中：说清有几个" ;;
+            *) bad "ggrvt 多命中的报错不对：[$out]" ;;
+        esac
+        case $out in
+            *"$DUP_A"*) ok "ggrvt 多命中：列出了第一个 SHA" ;;
+            *) bad "ggrvt 多命中没列第一个 SHA：[$out]" ;;
+        esac
+        case $out in
+            *"$DUP_B"*) ok "ggrvt 多命中：列出了第二个 SHA" ;;
+            *) bad "ggrvt 多命中没列第二个 SHA：[$out]" ;;
+        esac
+        chk "ggrvt 多命中：没有擅自 revert（HEAD 没动）" \
+            "$(git -C "$GGCP_WORK" rev-parse HEAD)" "$DUP_B"
+        chk "ggrvt 多命中：工作树干净" "$(git -C "$GGCP_WORK" status --porcelain)" ""
+        # ggcp 的预检遇多命中：也报出来，并且说 ggrvt 会拒绝
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggcp 1234/1"
+        chk "预检遇多个同 Change-Id 提交：退出码 1" "$rc" "1"
+        case $out in
+            *"2 个提交"*"ggrvt 1234 会拒绝回退"*) ok "预检遇多命中：列出个数并说明 ggrvt 会拒绝" ;;
+            *) bad "预检遇多命中的说明不对：[$out]" ;;
+        esac
+        case $out in
+            *"$(printf '%s' "$DUP_A" | cut -c1-12)"*) ok "预检遇多命中：表里列出了第一个短 SHA" ;;
+            *) bad "预检遇多命中没列第一个 SHA：[$out]" ;;
+        esac
+        case $out in
+            *"$(printf '%s' "$DUP_B" | cut -c1-12)"*) ok "预检遇多命中：表里列出了第二个短 SHA" ;;
+            *) bad "预检遇多命中没列第二个 SHA：[$out]" ;;
+        esac
+        ggcp_reset
+
+        # ggrvt 的三条入口都能真回退：编号 / gerrit 链接 / Change-Id
+        for ARG in "1234" \
+                   "https://g.example.com/c/platform/mylib/+/1234" \
+                   "$GGCP_CID1234"; do
+            ggcp_reset
+            srun "source $GGCP_ROOT/stub.sh
+                cd $GGCP_WORK
+                ggcp 1234/1"
+            srun "source $GGCP_ROOT/stub.sh
+                cd $GGCP_WORK
+                ggrvt $ARG"
+            chk "ggrvt 用参数 '$ARG'：退出码 0" "$rc" "0"
+            chk "ggrvt 用参数 '$ARG'：真回退了（HEAD 是 Revert）" \
+                "$(git -C "$GGCP_WORK" log -1 --format=%s)" 'Revert "lab: change 1234 (ps1)"'
+        done
+        ggcp_reset
+
+        srun 'ggrvt'
+        chk "ggrvt 不给参数：退出码 2" "$rc" "2"
+        case $out in
+            *"Usage: ggrvt"*) ok "ggrvt 不给参数：打出了用法" ;;
+            *) bad "ggrvt 没打用法：[$out]" ;;
+        esac
+        srun 'ggrvt 1234/2'
+        chk "ggrvt 1234/2：退出码 2（不接受 patchset）" "$rc" "2"
+        case $out in
+            *"不接受 patchset"*) ok "ggrvt 1234/2：说清了不接受 patchset" ;;
+            *) bad "ggrvt 1234/2 的报错不对：[$out]" ;;
+        esac
+        srun 'ggrvt https://g.example.com/c/platform/mylib/+/1234/2'
+        chk "ggrvt <带 patchset 的链接>：退出码 2" "$rc" "2"
+        srun 'ggrvt 1,2'
+        chk "ggrvt 1,2：退出码 2（一次只回退一个）" "$rc" "2"
+        srun 'ggrvt abc'
+        chk "ggrvt abc：退出码 2（参数不对）" "$rc" "2"
+        srun 'ggrvt 1 2'
+        chk "ggrvt 1 2：退出码 2（一次只回退一个）" "$rc" "2"
+
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggrvt 9002"
+        chk "ggrvt 项目没检出：退出码 1" "$rc" "1"
+        case $out in
+            *"还没检出"*"repo sync gone/project"*) ok "ggrvt 项目没检出：提示 repo sync" ;;
+            *) bad "ggrvt 项目没检出的报错不对：[$out]" ;;
+        esac
+        srun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggrvt 9001"
+        chk "ggrvt 查到的 change 没有 Change-Id：退出码 1" "$rc" "1"
+        case $out in
+            *"没给出 change 9001 的 Change-Id"*) ok "ggrvt 缺 Change-Id：报错说清了" ;;
+            *) bad "ggrvt 缺 Change-Id 的报错不对：[$out]" ;;
+        esac
 
         # ---- 四笔跨两个仓库：并行查询 + 同仓库串行 + 不同仓库并行 + 合并成一张表 ----
         GR_QLOG="$T/ggcp-query.$SHELL_NAME.log"
