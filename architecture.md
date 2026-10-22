@@ -87,12 +87,24 @@ GitHub 仓库名仍是 `allinkernel/wtool-repo`，2026-10-04 由 `tools/repo` �
 
 **ggcp 的两阶段**：
 
+**两阶段的作业都跑在一个子 shell 里**（2026-10-22 修 job 控制噪声）：外层是
+`( … ) || rc=$?`，bash 进子 shell 先 `set +m`、zsh 先 `unsetopt monitor notify`。
+原因：交互式 shell 里 `cmd &` 会往 stderr 打 `[1] 12345`、作业结束时再打
+`[1]+ Done ...`（bash 的启动提示连 `set +m` 都压不住，实测
+`bash -ic 'set +m; sleep 1 &'` 照样打）—— 用户看到的就不只是表格。放进子 shell
+（非交互式，zsh 子 shell 里 monitor 本来就是 off）后，父 shell 从头到尾不知道这些
+作业存在，一个字都不打；用户 shell 的 `monitor`/`notify` **全程没被动过**，所以
+不需要"改完恢复"（这比改了再恢复更稳：中途 Ctrl-C 也不会留下一个关掉作业控制的
+shell）。**不 disown**：实测 disown 掉的 pid 再 `wait` 会立刻返回（bash 只等
+~2ms、zsh rc=127），并行阶段就失去同步；子 shell 退出时作业表随之消失，不需要它。
+
 还没进入补丁结果就失败时（`_gerrit_resolve` 失败 / `_gr_expand_changeids` 失败）先走
 `_gr_fail_table <原因>`：给每个用户条目写一行
 `-  -  -  <patchset|->  查询失败：<原因>`，再用 `_gr_result_table` 打表；详细原因仍在 stderr。
 
-1. `work=$(mktemp -d "${TMPDIR:-/tmp}/ggcp.XXXXXX")`，每个 `_GGCP_ITEMS` 条目写一个
-   `req.N`，然后 `( _gr_query_one … > out.N 2> err.N ) < /dev/null &` —— **全部并行**，
+1. `work=$(mktemp -d "${TMPDIR:-/tmp}/ggcp.XXXXXX")`（在父 shell 里建，保证异常退出也能
+   删），每个 `_GGCP_ITEMS` 条目写一个 `req.N`，然后在子 shell 里
+   `( _gr_query_one … > out.N 2> err.N ) < /dev/null &` —— **全部并行**，
    pid 收进数组后逐个 `wait`。查询之间不共享 stdout/stderr，所以不会互相穿插。
 2. 读 `out.N` 按第 5 列（project）分组；每个项目一个 `g.<id>.spec`，组的顺序按
    **第 8 列（本地相对路径）排序**（路径拿不到就用项目名），`LC_ALL=C sort`。
@@ -104,6 +116,8 @@ GitHub 仓库名仍是 `allinkernel/wtool-repo`，2026-10-04 由 `tools/repo` �
    `<仓库数> 个仓库 / <笔数> 笔提交 / 成功 <S> / 失败 <F>`（成功数用
    `awk -F '\t' '$5 == "成功"'` 数），再用 `gerrit_query.py result-table` 打 5 列表：
    `项目名 | 项目路径 | 提交 id | patchset | 结果说明`。返回 0 = 全成功，1 = 有失败。
+   它是子 shell 的最后一条命令，`( … )` 的退出码由 `|| rc=$?` 接住，父 shell 再
+   `rm -rf "$work"` 并 `return ${rc}`。
 
 **`_gr_repo_batch`（一个仓库，串行）**：
 
@@ -205,7 +219,7 @@ zsh 用 `[[ ${token} == *[!.]* ]] && return 1`，bash 用 `case ${token} in *[!.
 
 ## 5. 测试
 
-`tests/run_tests.sh`（`#!/bin/sh` + `set -eu`，452 条，不连网）：
+`tests/run_tests.sh`（`#!/bin/sh` + `set -eu`，480 条，不连网）：
 
 1. `my_repo.py`：假工作区（`.repo/repo` **不存在**、`<include>`、`local_manifests`、
    remote/project 级 revision）上的查询、`list`、错误处理；
@@ -238,6 +252,12 @@ zsh 用 `[[ ${token} == *[!.]* ]] && return 1`，bash 用 `case ${token} in *[!.
    日志算出**同仓库并行度 =1 / 跨仓库并行度 ≥2**、`git log --format=%s` 看顺序、
    `git status --porcelain` 与 `CHERRY_PICK_HEAD` 看冲突后是否收干净、
    `git rev-parse HEAD` 看 `-n` 时没动、`cksum` 比对 `ggco` 函数体。
+   **stderr 与作业控制噪声**：`erun`（stderr 单独进 `$T/e.$SHELL_NAME`，不并进 stdout）
+   断言成功路径 **0 字节**；再用 `script(1)` 起真 PTY 的交互式 shell（bash
+   `--norc -i -c "$(cat body)"`、zsh `-f -i -c …`，monitor=on）断言终端里没有
+   `[N]` / `Done` / `no job control`，且 `monitor`/`notify` 跑完保持原值
+   （on→on、off→off）。⚠️ 测 monitor 不能写在 `$( … )` 里：zsh 的子 shell 里
+   monitor 本来就是 off，会把自己误判成 off。
 
 测试一开始就把 `HOME` / `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` / `XDG_DATA_HOME` /
 `XDG_STATE_HOME` 指向 `$T` 下的临时目录并 `export`（夹具的 git 和被测 shell 都只看见空配置，

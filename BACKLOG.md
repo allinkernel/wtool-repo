@@ -7,6 +7,44 @@
 
 ---
 
+## ✅ `ggcp` 交互式 shell 的 job 控制噪声（2026-10-22）
+
+**用户原话**："`ggcp` 命令，应该是标准错误输出还是会被打印出来，用户看到的不只是表格，
+还有**一堆 shell 输出的 job 控制相关信息**。需要调整一下"。
+
+**根因**：两阶段的并行查询 / 执行用 `( … ) &` 起后台作业，交互式 shell（monitor=on）
+在 `&` 时往 stderr 打 `[1] 12345`、作业结束时再补 `[1]+ Done ...`。`ggcp … 2>err`
+时 bash 的那几条启动提示会落进 **err**（四笔实测 66 字节），zsh 的完成提示还会直接
+打到终端。⚠️ 实测 **bash 的启动提示连 `set +m` 都压不住**（`bash -ic 'set +m; sleep 1 &'`
+照样打 `[1] …`），所以"只关 monitor 再恢复"这个方案不够。
+
+**怎么修**（`env.zsh` / `env.bash` 各一份，改动对称）：
+
+1. 阶段 1/2 **整体包进一个子 shell**：`( … ) || rc=$?`。父 shell 从头到尾不知道这些
+   后台作业存在，一个字都不会打；子 shell 里先 `set +m`（bash）/ `unsetopt monitor notify`
+   （zsh）做双保险。子 shell 的最后一条命令是 `_gr_result_table`，退出码经 `|| rc=$?`
+   带回父 shell（0 = 全成功、1 = 有失败，行为不变）。
+2. **不 disown**：实测 disown 掉的 pid 再 `wait` 会立刻返回（sleep 1.2 的作业
+   bash 只等 ~2ms、zsh 直接 rc=127），并行阶段就失去同步。子 shell 退出时作业表
+   随之消失，不 disown 也不会留下通知。
+3. 父 shell 的 `monitor` / `notify` **全程没动**，所以不需要"改完恢复"（这比改了再
+   恢复更稳：中途 Ctrl-C 也不会留下一个关掉作业控制的 shell）。
+
+**验证到什么程度**：
+
+- `sh tests/run_tests.sh` → **480 通过 / 0 失败**（改前 452，新增 28 条；
+  用系统 zsh：`env $(env | sed -n 's/^\(WTOOL[A-Z_]*\)=.*/-u \1/p') PATH=/usr/bin:/bin`）。
+- 新增断言：成功路径 `stderr` **0 字节**（`erun` 把 stderr 单独收进文件，不与 stdout 混）；
+  真 PTY（`script(1)` + 交互式 shell，zsh `-f -i` / bash `--norc -i -c "$(cat body)"`）
+  跑四笔后终端里没有 `[N]` / `Done` / `no job control`，`monitor`/`notify` on→on、
+  off→off，表格照常打出来。
+- **变异验证**：把 `env.zsh`/`env.bash` 换回改前版本重跑，新用例红 3 条
+  （zsh 终端出现 `[3] 927129…`；bash `stderr=66` 字节 ×2），证明这些用例真钉得住。
+- PTY 手测（`~/.wtool` 那套 PATH 挡掉、`script` 真 PTY）：四笔 `ggcp … 2>err` →
+  **err = 0 字节**，stdout = 顶行总述 + 6 列表格。
+
+---
+
 ## ✅ `ggcp` 改成"并行查询 + 按仓库聚拢的一张表" + `cdd -N`（2026-10-21）
 
 **用户改了口径（最终版）**："`ggcp` 我要输出格式为**表格样式，全部是表格样式**。

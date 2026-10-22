@@ -39,6 +39,12 @@
 - **`ggcp` 的结果表是"按仓库聚拢后一次性打印"的**：阶段 1 并行查询、阶段 2 同仓库串行 /
   不同仓库并行，每个仓库的结果先写缓冲，全部结束后才合并成一张表（`gerrit_query.py
   result-table`）。改输出时别退回"边执行边打印"——那会让不同仓库的日志穿插。
+- **`ggcp` 的两个并行阶段整体跑在一个子 shell 里**（bash `set +m` / zsh
+  `unsetopt monitor notify` 也在子 shell 里）：这样才能消掉交互式 shell 的
+  `[1] 12345` / `[1]+ Done ...`。⚠️ **别把它挪回父 shell，也别加 disown**：
+  bash 的启动提示连 `set +m` 都压不住；disown 掉的 pid 再 `wait` 会立刻返回
+  （zsh rc=127），并行阶段会失去同步。**成功路径 stderr 必须是 0 字节，表格只走
+  stdout** —— 测试里有真 PTY 用例钉着（见 `AGENTS.md` §3 说明）。
 - **`cdd -N` 和 `ggcp` 共用 `_gr_query_info`**：不要在 `cdd` 里另写一份 ssh/JSON 解析。
 - **`env.zsh` 和 `env.bash` 必须同改。** 同一批命令、同样的报错文字、同样的退出码。
   报错前缀两个 shell 都取"当前函数名"（zsh `funcstack[1]` / bash `FUNCNAME[0]`），
@@ -63,10 +69,11 @@
 ## 3. 验证（改完必须跑）
 
 ```sh
-sh tests/run_tests.sh      # 452 条，应该全绿（以脚本最后打印的通过/失败数为准；
-                           #   2026-10-21 实测 452 通过 0 失败（这一版加了 ggcp 两阶段
-                           #   表格输出 / 冲突分类 / cdd -N，+117 条）—— 这个数字常变，
-                           #   只有它**跑出来**的 PASS/FAIL 行算数，别手抄）
+sh tests/run_tests.sh      # 480 条，应该全绿（以脚本最后打印的通过/失败数为准；
+                           #   2026-10-22 实测 480 通过 0 失败（这一版加了 ggcp 的
+                           #   stderr=0 / 真 PTY 作业控制噪声用例，+28 条；
+                           #   上一版 452：ggcp 两阶段表格 / 冲突分类 / cdd -N）
+                           #   这个数字常变，只有它**跑出来**的 PASS/FAIL 行算数，别手抄）
                            #
                            #   ⚠️ 本机 PATH 里 `zsh` 可能先命中 ~/.wtool/usr/bin/zsh
                            #   （module_path 指向 /root，zsh/regex 加载不了 → 大面积红）。

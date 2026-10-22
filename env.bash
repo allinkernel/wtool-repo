@@ -1253,81 +1253,97 @@ ggcp () {
         printf 'ggcp: 建不了临时目录\n' >&2
         return 1
     }
-    local -a qpids rpids
+    local -a qpids=() rpids=()
     local item_count=0 i gid g=0 project rel gidx sortkey pid
     local number patchset revision ref branch url
 
-    # ---- 阶段 1：每个补丁一条查询，全部并行（结果各写各的文件，互不穿插）----
-    for item in "${_GGCP_ITEMS[@]}"; do
-        number=${item%%|*}
-        patchset=${item#*|}
-        [ -n "${ps_all}" ] && patchset=${ps_all}
-        item_count=$(( item_count + 1 ))
-        i=${item_count}
-        printf '%s\t%s\n' "${number}" "${patchset}" > "${work}/req.${i}"
-        ( _gr_query_one "${number}" "${patchset}" > "${work}/out.${i}" 2> "${work}/err.${i}" ) < /dev/null &
-        qpids+=("$!")
-    done
-    for pid in "${qpids[@]}"; do
-        wait "${pid}" 2>/dev/null || true
-    done
+    # 两阶段的并行查询 / 执行**整体放进一个子 shell**里跑。作业控制是 shell
+    # 自己的状态：交互式 shell 里 `cmd &` 会往 stderr 打 `[1] 12345`，作业结束
+    # 时还会打 `[1]+ Done ...` —— 用户看到的就不只是表格了。
+    # 实测 bash 的启动提示连 `set +m` 都压不住（`bash -ic 'set +m; sleep 1 &'`
+    # 照样打 `[1] 12345`），只有放进子 shell 才彻底没有：子 shell 不是交互式，
+    # 父 shell 从头到尾不知道这些作业存在，一个字都不会打。用户 shell 的
+    # monitor 选项**全程没被动过**，所以不需要"改完恢复"（这比改了再恢复更稳：
+    # 中途 Ctrl-C 也不会留下一个关掉作业控制的 shell）。子 shell 里再 `set +m`
+    # 是双保险 —— 有的 shell 会把选项继承进子 shell。
+    #
+    # 不 disown：实测 `disown` 掉的 pid 再 `wait` 会立刻返回（sleep 1.2 只等了
+    # 2ms），并行阶段就失去同步。子 shell 退出时作业表随之消失，不 disown
+    # 也不会留下任何通知。
+    (
+        set +m
 
-    # ---- 阶段 2：按项目分组（同一个项目 = 同一个仓库，串行；项目之间并行）----
-    : > "${work}/seen"
-    : > "${work}/groups"
-    for (( i = 1; i <= item_count; i++ )); do
-        [ -s "${work}/out.${i}" ] || continue
-        IFS=$'\t' read -r number patchset revision ref project branch url rel < "${work}/out.${i}"
-        [ -z "${project}" ] && project='-'
-        if ! grep -Fxq -- "${project}" "${work}/seen"; then
-            g=$(( g + 1 ))
-            printf '%s\n' "${project}" >> "${work}/seen"
-            printf '%s\t%s\n' "${g}" "${project}" >> "${work}/groups"
-        fi
-        gid=$(awk -F '\t' -v p="${project}" '$2 == p { print $1; exit }' "${work}/groups")
-        cat "${work}/out.${i}" >> "${work}/g.${gid}.spec"
-    done
+        # ---- 阶段 1：每个补丁一条查询，全部并行（结果各写各的文件，互不穿插）----
+        for item in "${_GGCP_ITEMS[@]}"; do
+            number=${item%%|*}
+            patchset=${item#*|}
+            [ -n "${ps_all}" ] && patchset=${ps_all}
+            item_count=$(( item_count + 1 ))
+            i=${item_count}
+            printf '%s\t%s\n' "${number}" "${patchset}" > "${work}/req.${i}"
+            ( _gr_query_one "${number}" "${patchset}" > "${work}/out.${i}" 2> "${work}/err.${i}" ) < /dev/null &
+            qpids+=("$!")
+        done
+        for pid in "${qpids[@]}"; do
+            wait "${pid}" 2>/dev/null || true
+        done
 
-    # 仓库之间按本地路径排序（稳定、可读；路径拿不到就按项目名）
-    : > "${work}/order"
-    while IFS=$'\t' read -r gidx project; do
-        rel=$(cut -f8 "${work}/g.${gidx}.spec" | head -n 1)
-        if [ -z "${rel}" ] || [ "${rel}" = '-' ]; then
-            sortkey=${project}
-        else
-            sortkey=${rel}
-        fi
-        printf '%s\t%s\t%s\n' "${sortkey}" "${gidx}" "${project}" >> "${work}/order"
-    done < "${work}/groups"
-    LC_ALL=C sort -t $'\t' -k1,1 "${work}/order" > "${work}/order.sorted"
+        # ---- 阶段 2：按项目分组（同一个项目 = 同一个仓库，串行；项目之间并行）----
+        : > "${work}/seen"
+        : > "${work}/groups"
+        for (( i = 1; i <= item_count; i++ )); do
+            [ -s "${work}/out.${i}" ] || continue
+            IFS=$'\t' read -r number patchset revision ref project branch url rel < "${work}/out.${i}"
+            [ -z "${project}" ] && project='-'
+            if ! grep -Fxq -- "${project}" "${work}/seen"; then
+                g=$(( g + 1 ))
+                printf '%s\n' "${project}" >> "${work}/seen"
+                printf '%s\t%s\n' "${g}" "${project}" >> "${work}/groups"
+            fi
+            gid=$(awk -F '\t' -v p="${project}" '$2 == p { print $1; exit }' "${work}/groups")
+            cat "${work}/out.${i}" >> "${work}/g.${gid}.spec"
+        done
 
-    # 每个仓库一个后台任务：仓库内部串行，仓库之间并行
-    while IFS=$'\t' read -r sortkey gid project; do
-        ( _gr_repo_batch "${project}" "${work}/g.${gid}.spec" "${work}/rows.${gid}" ) < /dev/null &
-        rpids+=("$!")
-    done < "${work}/order.sorted"
-    for pid in "${rpids[@]}"; do
-        wait "${pid}" 2>/dev/null || true
-    done
+        # 仓库之间按本地路径排序（稳定、可读；路径拿不到就按项目名）
+        : > "${work}/order"
+        while IFS=$'\t' read -r gidx project; do
+            rel=$(cut -f8 "${work}/g.${gidx}.spec" | head -n 1)
+            if [ -z "${rel}" ] || [ "${rel}" = '-' ]; then
+                sortkey=${project}
+            else
+                sortkey=${rel}
+            fi
+            printf '%s\t%s\t%s\n' "${sortkey}" "${gidx}" "${project}" >> "${work}/order"
+        done < "${work}/groups"
+        LC_ALL=C sort -t $'\t' -k1,1 "${work}/order" > "${work}/order.sorted"
 
-    # 各仓库都结束后才合并结果：先按仓库分组，查询失败的排在最后
-    : > "${work}/rows.all"
-    while IFS=$'\t' read -r sortkey gid project; do
-        [ -f "${work}/rows.${gid}" ] && cat "${work}/rows.${gid}" >> "${work}/rows.all"
-    done < "${work}/order.sorted"
-    local reason
-    for (( i = 1; i <= item_count; i++ )); do
-        [ -s "${work}/out.${i}" ] && continue
-        IFS=$'\t' read -r number patchset < "${work}/req.${i}"
-        [ -z "${patchset}" ] && patchset='-'
-        reason=$(_gr_first_line "$(cat "${work}/err.${i}" 2>/dev/null)")
-        [ -z "${reason}" ] && reason='查询失败'
-        reason=${reason//$'\t'/ }
-        printf '%s\t%s\t%s\t%s\t%s\n' '-' '-' '-' "${patchset}" "查询失败：${reason}" >> "${work}/rows.all"
-    done
+        # 每个仓库一个后台任务：仓库内部串行，仓库之间并行
+        while IFS=$'\t' read -r sortkey gid project; do
+            ( _gr_repo_batch "${project}" "${work}/g.${gid}.spec" "${work}/rows.${gid}" ) < /dev/null &
+            rpids+=("$!")
+        done < "${work}/order.sorted"
+        for pid in "${rpids[@]}"; do
+            wait "${pid}" 2>/dev/null || true
+        done
 
-    _gr_result_table "${work}/rows.all" "${g}" "${item_count}"
-    rc=$?
+        # 各仓库都结束后才合并结果：先按仓库分组，查询失败的排在最后
+        : > "${work}/rows.all"
+        while IFS=$'\t' read -r sortkey gid project; do
+            [ -f "${work}/rows.${gid}" ] && cat "${work}/rows.${gid}" >> "${work}/rows.all"
+        done < "${work}/order.sorted"
+        local reason
+        for (( i = 1; i <= item_count; i++ )); do
+            [ -s "${work}/out.${i}" ] && continue
+            IFS=$'\t' read -r number patchset < "${work}/req.${i}"
+            [ -z "${patchset}" ] && patchset='-'
+            reason=$(_gr_first_line "$(cat "${work}/err.${i}" 2>/dev/null)")
+            [ -z "${reason}" ] && reason='查询失败'
+            reason=${reason//$'\t'/ }
+            printf '%s\t%s\t%s\t%s\t%s\n' '-' '-' '-' "${patchset}" "查询失败：${reason}" >> "${work}/rows.all"
+        done
+
+        _gr_result_table "${work}/rows.all" "${g}" "${item_count}"
+    ) || rc=$?
     rm -rf "${work}"
     return ${rc}
 }

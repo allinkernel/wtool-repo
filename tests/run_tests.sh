@@ -596,6 +596,23 @@ for SHELL_NAME in zsh bash; do
     echo "== env.$SHELL_NAME：cnp/cdd 的用法报错 =="
     mkdir -p "$WS/kernel/common/.git" "$WS/device/emui/generic_a15/.git"
 
+    # 真 PTY 用例要拿绝对路径起交互式 shell（不能靠后半句的 PATH 里那个 shell）
+    SHELL_BIN=$(command -v "$SHELL_NAME")
+    # 读 / 关"作业控制通知"的写法两个 shell 不同，在这里集中定义一次。
+    # ⚠️ MEASURE_MON 只给变量 MON 赋值，**不能写成 echo "$(...)"**：
+    # zsh 的 `$(...)` 是子 shell，子 shell 里 monitor 本来就是 off（这也正是
+    # env.zsh 把并行阶段放进子 shell 就能消掉提示的原因）—— 拿 $() 去测，
+    # 交互式 shell 也会被误判成 off。
+    if [ "$SHELL_NAME" = zsh ]; then
+        MEASURE_MON='if [[ -o monitor ]]; then MON=on; else MON=off; fi'
+        MON_OFF='unsetopt monitor notify'
+        SHELL_RC_FLAG='-f'
+    else
+        MEASURE_MON='case $- in *m*) MON=on;; *) MON=off;; esac'
+        MON_OFF='set +m'
+        SHELL_RC_FLAG='--norc'
+    fi
+
     shell_eval () {   # $1 = 在夹具里执行的片段
         cat > "$T/s.script" <<EOF
 WTOOL_PROJECT_DIR='$here/..'
@@ -610,6 +627,22 @@ EOF
     srun () {       # $1 = 片段；设置 out / rc
         rc=0
         out=$(shell_eval "$1") || rc=$?
+    }
+    # 和 shell_eval 一样，但 stderr 单独进文件、**不并进 out** ——
+    # 「stderr 必须是 0 字节」这条只能这么测（2>&1 一混就看不出来了）
+    shell_eval_err () {
+        cat > "$T/e.script" <<EOF
+WTOOL_PROJECT_DIR='$here/..'
+source "\$WTOOL_PROJECT_DIR/env.$SHELL_NAME"
+cd '$WS/kernel/common'
+$1
+EOF
+        "$SHELL_NAME" "$T/e.script" 2>"$T/e.$SHELL_NAME"
+    }
+    erun () {       # $1 = 片段；设置 out / rc / errout
+        rc=0
+        out=$(shell_eval_err "$1") || rc=$?
+        errout=$(cat "$T/e.$SHELL_NAME")
     }
 
     srun 'cnp device/emui/generic_a15'
@@ -1081,6 +1114,102 @@ EOF
             "$(git -C "$GGCP_OTHER" log --format=%s -2 | tr '\n' '/')" "lab: B2/lab: B1/"
         chk "ggcp 四笔：两个工作树都干净" \
             "$(git -C "$GGCP_WORK" status --porcelain)$(git -C "$GGCP_OTHER" status --porcelain)" ""
+
+        # ---- 成功路径：stderr 必须是 0 字节（非交互 shell 也一条都不许有）----
+        # 用户报的现场是「表格之外还有一堆 shell 的 job 控制信息」。这些提示
+        # 分两路：① shell 打 `[1] 12345` 时走的是**当前命令的 stderr**
+        # （所以 `ggcp 2>err` 会把它收进 err，实测 bash 四笔 = 66 字节）；
+        # ② 交互式 shell 在作业结束时又往终端补 `[1]+ Done ...`。
+        # 这里先钉 ①：非交互 shell 里跑一遍，err 必须是空的。
+        ggcp_reset
+        erun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggcp 1 2"
+        chk "ggcp 成功路径（非交互）：退出码 0" "$rc" "0"
+        chk "ggcp 成功路径（非交互）：stderr 一个字节都没有" \
+            "$(wc -c < "$T/e.$SHELL_NAME" | tr -d ' ')" "0"
+        chk "ggcp 成功路径（非交互）：stdout 只有总述 + 表（5 行）" \
+            "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "5"
+
+        # 后台作业前后的 shell 选项：这个 shell 原本 monitor=off，跑完不许变成 on
+        # （老写法里若有人无条件 `set -m` / `setopt monitor`，这条会红）
+        ggcp_reset
+        erun "source $GGCP_ROOT/stub.sh
+            cd $GGCP_WORK
+            ggcp 1 2 >/dev/null
+            $MEASURE_MON
+            echo \"MON=\$MON\""
+        chk "ggcp 跑完：非交互 shell 的 monitor 还是 off（没被打开）" \
+            "$(printf '%s\n' "$out" | sed -n 's/^MON=//p')" "off"
+
+        # ---- 真 PTY：交互式 shell 里 ggcp 只许有表格，不许有 job 控制噪声 ----
+        # script(1) 给一个真 PTY + 交互式 shell（monitor=on），这正是用户看到
+        # `[1] 12345` / `[1]+ Done ...` 的场景。⚠️ bash 必须用
+        # `-ic "$(cat body)"`（当命令敲）才复现得出来；`-ic 'source body'`
+        # 实测不打启动提示，拿它测等于没测。zsh 两条路都会打。
+        if command -v script >/dev/null 2>&1; then
+            # (a) monitor 原本 on：跑完必须还是 on；stderr 0 字节；终端只有表
+            ggcp_reset
+            cat > "$T/ggcp-pty.$SHELL_NAME" <<EOF
+WTOOL_PROJECT_DIR='$here/..'
+. "\$WTOOL_PROJECT_DIR/env.$SHELL_NAME"
+. "$GGCP_ROOT/stub.sh"
+cd "$GGCP_WORK"
+$MEASURE_MON
+echo "MON_BEFORE=\$MON"
+ggcp -y 101 102 103 104 2> "$T/ggcp-pty.err.$SHELL_NAME"
+echo "RC=\$?"
+$MEASURE_MON
+echo "MON_AFTER=\$MON"
+EOF
+            pty_rc=0
+            pty_out=$(script -qec "$SHELL_BIN $SHELL_RC_FLAG -i -c \"\$(cat '$T/ggcp-pty.$SHELL_NAME')\"" /dev/null 2>&1 | tr -d '\r') || pty_rc=$?
+            chk "真 PTY（monitor 原本 on）ggcp 四笔：退出码 0" \
+                "$(printf '%s\n' "$pty_out" | sed -n 's/^RC=//p' | tail -1)" "0"
+            chk "真 PTY（monitor 原本 on）：跑前是 on" \
+                "$(printf '%s\n' "$pty_out" | sed -n 's/^MON_BEFORE=//p' | tail -1)" "on"
+            chk "真 PTY（monitor 原本 on）：跑完还是 on（没动用户的作业控制）" \
+                "$(printf '%s\n' "$pty_out" | sed -n 's/^MON_AFTER=//p' | tail -1)" "on"
+            chk "真 PTY（monitor 原本 on）：ggcp 的 stderr 是 0 字节" \
+                "$(wc -c < "$T/ggcp-pty.err.$SHELL_NAME" | tr -d ' ')" "0"
+            pty_noise=$(printf '%s\n' "$pty_out" \
+                | grep -E '^\[[0-9]+\]|no job control|cannot set terminal process group|SIGHUPed' || true)
+            chk "真 PTY（monitor 原本 on）：终端里没有任何 job 控制提示" "$pty_noise" ""
+            case $pty_out in
+                *项目名*结果说明*platform/mylib*成功*platform/other*成功*)
+                    ok "真 PTY（monitor 原本 on）：表格照常打出来（两个仓库都成功）" ;;
+                *) bad "真 PTY（monitor 原本 on）里表格不对：[$pty_out]" ;;
+            esac
+
+            # (b) monitor 原本 off：跑完必须还是 off（别"恢复"成 on）
+            ggcp_reset
+            cat > "$T/ggcp-pty2.$SHELL_NAME" <<EOF
+WTOOL_PROJECT_DIR='$here/..'
+. "\$WTOOL_PROJECT_DIR/env.$SHELL_NAME"
+. "$GGCP_ROOT/stub.sh"
+cd "$GGCP_WORK"
+$MON_OFF
+$MEASURE_MON
+echo "MON_BEFORE=\$MON"
+ggcp -y 101 102 103 104 > /dev/null 2> "$T/ggcp-pty2.err.$SHELL_NAME"
+echo "RC=\$?"
+$MEASURE_MON
+echo "MON_AFTER=\$MON"
+EOF
+            pty_rc=0
+            pty_out=$(script -qec "$SHELL_BIN $SHELL_RC_FLAG -i -c \"\$(cat '$T/ggcp-pty2.$SHELL_NAME')\"" /dev/null 2>&1 | tr -d '\r') || pty_rc=$?
+            chk "真 PTY（monitor 原本 off）ggcp 四笔：退出码 0" \
+                "$(printf '%s\n' "$pty_out" | sed -n 's/^RC=//p' | tail -1)" "0"
+            chk "真 PTY（monitor 原本 off）：跑前是 off" \
+                "$(printf '%s\n' "$pty_out" | sed -n 's/^MON_BEFORE=//p' | tail -1)" "off"
+            chk "真 PTY（monitor 原本 off）：跑完还是 off（没被恢复成 on）" \
+                "$(printf '%s\n' "$pty_out" | sed -n 's/^MON_AFTER=//p' | tail -1)" "off"
+            chk "真 PTY（monitor 原本 off）：stderr 是 0 字节" \
+                "$(wc -c < "$T/ggcp-pty2.err.$SHELL_NAME" | tr -d ' ')" "0"
+            ggcp_reset
+        else
+            echo "  （没装 script，真 PTY 的 job 控制噪声用例跳过）"
+        fi
 
         # ---- 文件冲突：逐文件写出来，然后 --abort 收干净 ----
         ggcp_reset
