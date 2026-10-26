@@ -198,6 +198,12 @@ chk "patchset 第 10 列是所有 patchset 的 编号:revision:ref" \
 # 老 gerrit 没有 change_id，只有 id（project~branch~Change-Id）
 sed 's/"change_id":"I1111111111111111111111111111111111111111",/"id":"platform\/frameworks\/base~main~I1111111111111111111111111111111111111111",/' \
     "$T/q.json" > "$T/q-id.json"
+
+# stock gerrit（3.9/3.14 实测）：既没有 change_id，id 也不带 `~`，就是裸的 I<40hex>
+sed 's/"change_id":"I1111111111111111111111111111111111111111",/"id":"I1111111111111111111111111111111111111111",/' \
+    "$T/q.json" > "$T/q-bareid.json"
+  chk "stock gerrit 的裸 id（I<40hex>）也认" \
+      "$(python3 $G patchset 1234 < "$T/q-bareid.json" | cut -f9)" "I1111111111111111111111111111111111111111"
 chk "change_id 缺失时从老的 id 字段兜底" \
     "$(python3 $G patchset 1234 < "$T/q-id.json" | cut -f9)" "I1111111111111111111111111111111111111111"
 # 两个字段都没有（夹具/非 gerrit 提交）：列是空的，ggcp 的预检自动跳过

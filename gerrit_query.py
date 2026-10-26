@@ -169,6 +169,11 @@ def change_id_of(change):
         tail = ident.rsplit("~", 1)[1].strip()
         if CHANGE_ID_RE.match(tail):
             return tail
+    # **stock gerrit（3.9 / 3.14 实测 2026-10-27）既没有 `change_id`，`id` 也不带 `~`** ——
+    # 就是裸的 `I<40hex>`。不认这条：ggcp 的「同 Change-Id 预检」会**永远被跳过**（照样
+    # cherry-pick），ggrvt 会报「gerrit 没给出 Change-Id」。
+    if CHANGE_ID_RE.match(ident):
+        return ident
     return ""
 
 

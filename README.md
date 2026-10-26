@@ -729,6 +729,14 @@ gerrit 配置文件的另外两个默认位置：`<repo 根>/.gerrit/client.conf
 补全由别的项目提供：wtool 自己的命令补全挂在 `wtool-base-tools` 项目的 env 上
 （`completion/wtool.zsh` / `completion/wtool.bash`）。
 
+
+### ggcp 不拦"同 Change-Id"、ggrvt 说"没给出 Change-Id"
+
+**stock gerrit 的 `gerrit query --format=JSON` 既没有 `change_id` 字段，`id` 也不带
+`project~branch~` 前缀**（3.9 / 3.14 实测 2026-10-27），就是裸的 `I<40hex>`。
+旧版 `change_id_of()` 只认前两种 → 预检被静默跳过、ggrvt 报错。已修（裸 id 也认，
+`run_tests.sh` 有对应用例）。真 gerrit 上验证：`ggcp 1234/1` 后 `ggcp 1234/2` 会被拦。
+
 ## 排错
 
 | 现象 / 报错 | 原因 / 怎么办 |

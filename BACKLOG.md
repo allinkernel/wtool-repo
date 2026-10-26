@@ -528,3 +528,6 @@ cd ~/self/wtool/tools/git-repo-sh-tools && sh tests/run_tests.sh    # 173 通过
 ## ⏸ 待拍板
 
 （暂时没有。）
+
+- ✅ **2026-10-27** 真 gerrit（3.9/3.14）实测：`change_id_of()` 不认裸 `id`（`I<40hex>`）
+  → 同 Change-Id 预检被静默跳过、`ggrvt` 报"没给出 Change-Id"。已修 + 加用例（631/0）。
